@@ -1,0 +1,9 @@
+django
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+python-decouple
+pytesseract
+pillow
+opencv-python-headless
+numpy
