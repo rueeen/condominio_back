@@ -24,3 +24,43 @@ class CondominioTokenObtainPairTests(TestCase):
         self.assertEqual(token["rol"], "propietario")
         self.assertEqual(token["username"], "propietario1")
         self.assertEqual(token["unidad"], "A-101")
+
+
+from unittest.mock import patch
+
+import cv2
+import numpy as np
+
+from acceso import ocr
+
+
+class OCRPatenteTests(TestCase):
+    def _imagen_bytes(self):
+        imagen = np.full((120, 240, 3), 255, dtype=np.uint8)
+        ok, buffer = cv2.imencode(".jpg", imagen)
+        self.assertTrue(ok)
+        return buffer.tobytes()
+
+    @patch("acceso.ocr.pytesseract.image_to_string")
+    @patch("acceso.ocr.detectar_regiones_patente")
+    def test_extraer_patente_lee_primer_recorte_valido(self, detectar, tesseract):
+        detectar.return_value = [(10, 20, 80, 30), (0, 0, 60, 20)]
+        tesseract.side_effect = ["ruido", "ABCD12"]
+
+        patente = ocr.extraer_patente(self._imagen_bytes())
+
+        self.assertEqual(patente, "ABCD12")
+        self.assertEqual(tesseract.call_count, 2)
+
+    @patch("acceso.ocr.pytesseract.image_to_string", return_value="ABCD12")
+    @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
+    def test_extraer_patente_usa_imagen_completa_como_fallback(self, detectar, tesseract):
+        patente = ocr.extraer_patente(self._imagen_bytes())
+
+        self.assertEqual(patente, "ABCD12")
+        tesseract.assert_called_once()
+
+    @patch("acceso.ocr.pytesseract.image_to_string", return_value="sin patente")
+    @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
+    def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
+        self.assertIsNone(ocr.extraer_patente(self._imagen_bytes()))
