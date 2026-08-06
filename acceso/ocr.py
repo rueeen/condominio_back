@@ -14,6 +14,7 @@ Flujo:
 Requiere: pip install pytesseract pillow opencv-python-headless
 Y tener tesseract-ocr instalado a nivel de sistema operativo.
 """
+import logging
 import os
 import re
 
@@ -29,6 +30,8 @@ from rest_framework.views import APIView
 from .models import PATENTE_REGEX
 from .permissions import EsGuardia
 
+logger = logging.getLogger("acceso.ocr")
+
 CASCADE_PATH = os.path.join(
     settings.BASE_DIR,
     "acceso",
@@ -40,6 +43,13 @@ _plate_cascade = (
     if hasattr(cv2, "CascadeClassifier")
     else None
 )
+if _plate_cascade is None or _plate_cascade.empty():
+    logger.warning(
+        "El clasificador Haar no cargó desde %s (¿archivo faltante, "
+        "vacío o corrupto?). La detección de patente va a saltar directo "
+        "al fallback de imagen completa en cada intento.",
+        CASCADE_PATH,
+    )
 TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
@@ -54,8 +64,10 @@ def decodificar_imagen_gris(imagen_bytes: bytes) -> np.ndarray:
 
 def preprocesar_gris(imagen_gris: np.ndarray) -> np.ndarray:
     """Aplica el preprocesamiento usado antes del OCR."""
-    gris = cv2.bilateralFilter(imagen_gris, 11, 17, 17)  # reduce ruido, conserva bordes
-    _, binaria = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    gris = cv2.bilateralFilter(
+        imagen_gris, 11, 17, 17)  # reduce ruido, conserva bordes
+    _, binaria = cv2.threshold(
+        gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return binaria
 
 
@@ -72,31 +84,56 @@ def detectar_regiones_patente(imagen_gris):
     candidatos = _plate_cascade.detectMultiScale(
         imagen_gris, scaleFactor=1.1, minNeighbors=5, minSize=(60, 20)
     )
-    return sorted(candidatos, key=lambda r: r[2] * r[3], reverse=True)
+    candidatos_ordenados = sorted(
+        candidatos, key=lambda r: r[2] * r[3], reverse=True)
+    logger.info(
+        "Cascade: %d región(es) candidata(s) detectada(s): %s",
+        len(candidatos_ordenados),
+        [tuple(int(v) for v in c) for c in candidatos_ordenados],
+    )
+    return candidatos_ordenados
 
 
 def leer_patente_desde_imagen(imagen_procesada: np.ndarray) -> str | None:
     """Ejecuta Tesseract y devuelve una patente válida si el texto calza."""
-    texto = pytesseract.image_to_string(imagen_procesada, config=TESSERACT_CONFIG)
+    texto = pytesseract.image_to_string(
+        imagen_procesada, config=TESSERACT_CONFIG)
     candidata = re.sub(r"[^A-Z0-9]", "", texto.upper())
 
     if PATENTE_REGEX.match(candidata):
+        logger.info("Tesseract leyó %r -> limpio %r -> VÁLIDA",
+                    texto.strip(), candidata)
         return candidata
+
+    logger.info(
+        "Tesseract leyó %r -> limpio %r -> no calza con el formato de patente",
+        texto.strip(), candidata,
+    )
     return None
 
 
 def extraer_patente(imagen_bytes: bytes) -> str | None:
     """Devuelve la patente candidata (string) o None si no se detectó nada válido."""
+    logger.info("Nueva foto recibida: %d bytes", len(imagen_bytes))
     imagen_gris = decodificar_imagen_gris(imagen_bytes)
 
-    for x, y, w, h in detectar_regiones_patente(imagen_gris):
+    candidatos = detectar_regiones_patente(imagen_gris)
+    for i, (x, y, w, h) in enumerate(candidatos):
+        logger.info("Probando candidato %d/%d: región (x=%d, y=%d, w=%d, h=%d)",
+                    i + 1, len(candidatos), x, y, w, h)
         recorte = imagen_gris[y:y + h, x:x + w]
         patente = leer_patente_desde_imagen(preprocesar_gris(recorte))
         if patente:
+            logger.info("Patente encontrada en candidato %d: %s",
+                        i + 1, patente)
             return patente
 
     # Red de seguridad: mantiene el flujo anterior sobre la imagen completa.
-    return leer_patente_desde_imagen(preprocesar_gris(imagen_gris))
+    logger.info("Ningún candidato del cascade dio una lectura válida (o no hubo "
+                "candidatos) -> probando OCR sobre la imagen completa (fallback)")
+    patente = leer_patente_desde_imagen(preprocesar_gris(imagen_gris))
+    logger.info("Resultado del fallback sobre imagen completa: %s", patente)
+    return patente
 
 
 class LeerPatenteView(APIView):
@@ -108,7 +145,15 @@ class LeerPatenteView(APIView):
         if not archivo:
             return Response({"detail": "Falta el archivo 'foto'"}, status=400)
 
-        patente = extraer_patente(archivo.read())
+        try:
+            patente = extraer_patente(archivo.read())
+        except ValueError:
+            logger.warning(
+                "No se pudo decodificar la imagen recibida", exc_info=True)
+            return Response({
+                "ok": False,
+                "detalle": "La imagen recibida no se pudo procesar. Intenta de nuevo.",
+            })
 
         if patente:
             return Response({"ok": True, "patente": patente})
