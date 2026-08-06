@@ -1,6 +1,17 @@
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import IngresoLog, Vehiculo, Visitante
+
+
+class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token["rol"] = user.rol
+        token["username"] = user.username
+        token["unidad"] = user.unidad
+        return token
 
 
 class VisitanteSerializer(serializers.ModelSerializer):
