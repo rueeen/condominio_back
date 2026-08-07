@@ -1,8 +1,17 @@
+from datetime import timedelta
+from unittest.mock import patch
+
+import cv2
+import numpy as np
+
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
+
+from acceso import ocr
 
 
 class CondominioTokenObtainPairTests(TestCase):
@@ -83,13 +92,118 @@ class ListPaginationTests(TestCase):
         self.assertEqual(len(second_page.data["results"]), 1)
 
 
-from unittest.mock import patch
+class VisitanteVigenciaTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.propietario = user_model.objects.create_user(
+            username="propietario-visitas",
+            password="clave-segura",
+            rol="propietario",
+            torre=1,
+            departamento=101,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.propietario)
+        self.url = "/api/visitantes/"
+        self.datos_base = {"rut": "12345678-9", "nombre": "Visita"}
 
-import cv2
-import numpy as np
+    def _crear(self, **fechas):
+        return self.client.post(
+            self.url,
+            {**self.datos_base, **fechas},
+            format="json",
+        )
 
-from acceso import ocr
+    def test_visita_sin_fecha_fin_dura_cuatro_horas(self):
+        inicio = timezone.now() + timedelta(days=1)
 
+        response = self._crear(fecha_inicio=inicio.isoformat())
+
+        self.assertEqual(response.status_code, 201)
+        visita = self.propietario.visitantes.get()
+        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=4))
+        self.assertTrue(timezone.is_aware(visita.fecha_inicio))
+        self.assertTrue(timezone.is_aware(visita.fecha_fin))
+
+    def test_visita_sin_fecha_inicio_usa_hora_actual(self):
+        antes = timezone.now()
+
+        response = self._crear()
+
+        despues = timezone.now()
+        self.assertEqual(response.status_code, 201)
+        visita = self.propietario.visitantes.get()
+        self.assertLessEqual(antes, visita.fecha_inicio)
+        self.assertLessEqual(visita.fecha_inicio, despues)
+        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=4))
+
+    def test_visita_con_fechas_explicitas_validas(self):
+        inicio = timezone.now() + timedelta(hours=1)
+        fin = inicio + timedelta(hours=2)
+
+        response = self._crear(fecha_inicio=inicio.isoformat(), fecha_fin=fin.isoformat())
+
+        self.assertEqual(response.status_code, 201)
+        visita = self.propietario.visitantes.get()
+        self.assertEqual(visita.fecha_inicio, inicio)
+        self.assertEqual(visita.fecha_fin, fin)
+
+    def test_rechaza_fecha_fin_anterior_a_fecha_inicio(self):
+        inicio = timezone.now() + timedelta(hours=2)
+        fin = inicio - timedelta(minutes=1)
+
+        response = self._crear(fecha_inicio=inicio.isoformat(), fecha_fin=fin.isoformat())
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("estrictamente posterior", str(response.data["fecha_fin"][0]))
+
+    def test_rechaza_fechas_iguales(self):
+        instante = timezone.now() + timedelta(hours=2)
+
+        response = self._crear(
+            fecha_inicio=instante.isoformat(), fecha_fin=instante.isoformat()
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("estrictamente posterior", str(response.data["fecha_fin"][0]))
+
+    def test_permite_visita_futura(self):
+        inicio = timezone.now() + timedelta(days=7)
+
+        response = self._crear(fecha_inicio=inicio.isoformat())
+
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.data["vigente"])
+
+    def test_actualizacion_valida(self):
+        response = self._crear()
+        visita = self.propietario.visitantes.get()
+        nuevo_fin = visita.fecha_fin + timedelta(hours=1)
+
+        response = self.client.patch(
+            f"{self.url}{visita.pk}/", {"fecha_fin": nuevo_fin.isoformat()}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        visita.refresh_from_db()
+        self.assertEqual(visita.fecha_fin, nuevo_fin)
+
+    def test_actualizacion_invalida_no_modifica_la_visita(self):
+        self._crear()
+        visita = self.propietario.visitantes.get()
+        fin_original = visita.fecha_fin
+        inicio_invalido = fin_original + timedelta(minutes=1)
+
+        response = self.client.patch(
+            f"{self.url}{visita.pk}/",
+            {"fecha_inicio": inicio_invalido.isoformat()},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("estrictamente posterior", str(response.data["fecha_fin"][0]))
+        visita.refresh_from_db()
+        self.assertEqual(visita.fecha_fin, fin_original)
 
 class OCRPatenteTests(TestCase):
     def _imagen_bytes(self):

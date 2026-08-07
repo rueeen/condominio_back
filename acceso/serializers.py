@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -45,6 +46,30 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "vigente",
         ]
         read_only_fields = ["propietario", "creado_en", "vigente"]
+        extra_kwargs = {
+            "fecha_inicio": {"required": False},
+            "fecha_fin": {"required": False},
+        }
+
+    def validate(self, attrs):
+        fecha_inicio = attrs.get(
+            "fecha_inicio",
+            self.instance.fecha_inicio if self.instance else None,
+        )
+        fecha_fin = attrs.get(
+            "fecha_fin",
+            self.instance.fecha_fin if self.instance else None,
+        )
+        try:
+            fecha_inicio, fecha_fin = Visitante.validar_vigencia(
+                fecha_inicio, fecha_fin
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+        attrs["fecha_inicio"] = fecha_inicio
+        attrs["fecha_fin"] = fecha_fin
+        return attrs
 
     def create(self, validated_data):
         validated_data["propietario"] = self.context["request"].user
