@@ -10,6 +10,7 @@ from .models import MAX_PATENTES_POR_ESTACIONAMIENTO, Estacionamiento, IngresoLo
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
     CondominioTokenObtainPairSerializer,
+    DocumentoVerificacionSerializer,
     EstacionamientoSerializer,
     IngresoLogSerializer,
     PropietarioSerializer,
@@ -79,25 +80,29 @@ class VehiculoViewSet(viewsets.ModelViewSet):
 
 
 # ---------------------------------------------------------------------------
-# Guardia: verificación de RUT (visitas)
+# Guardia: verificación de documentos (visitas)
 # ---------------------------------------------------------------------------
 class VerificarRutView(APIView):
     permission_classes = [IsAuthenticated, EsGuardia]
 
     def post(self, request):
-        rut = request.data.get("rut", "").strip()
-        if not rut:
-            return Response({"detail": "Falta el RUT"}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = DocumentoVerificacionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        tipo_documento = serializer.validated_data["tipo_documento"]
+        numero_documento = serializer.validated_data["numero_documento"]
 
         ahora = timezone.now()
         visita = Visitante.objects.filter(
-            rut=rut, fecha_inicio__lte=ahora, fecha_fin__gte=ahora
+            tipo_documento=tipo_documento,
+            numero_documento=numero_documento,
+            fecha_inicio__lte=ahora,
+            fecha_fin__gte=ahora,
         ).first()
 
         resultado = IngresoLog.Resultado.PERMITIDO if visita else IngresoLog.Resultado.DENEGADO
         IngresoLog.objects.create(
             tipo=IngresoLog.Tipo.VISITA,
-            valor_ingresado=rut,
+            valor_ingresado=numero_documento,
             resultado=resultado,
             guardia=request.user,
             detalle=f"Visita a unidad {visita.propietario.unidad}" if visita else "Sin autorización vigente",
@@ -110,7 +115,7 @@ class VerificarRutView(APIView):
                 "unidad": visita.propietario.unidad,
                 "vigente_hasta": visita.fecha_fin,
             })
-        return Response({"permitido": False, "detalle": "No hay autorización vigente para este RUT"},
+        return Response({"permitido": False, "detalle": "No hay autorización vigente para este documento"},
                         status=status.HTTP_200_OK)
 
 
