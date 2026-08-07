@@ -178,6 +178,13 @@ class VehiculoResolverSerializer(serializers.Serializer):
     aprobar = serializers.BooleanField(required=True)
     motivo_rechazo = serializers.CharField(required=False, allow_blank=True)
 
+    def validate(self, attrs):
+        if not attrs["aprobar"] and not attrs.get("motivo_rechazo", "").strip():
+            raise serializers.ValidationError({
+                "motivo_rechazo": "Debes indicar el motivo del rechazo."
+            })
+        return attrs
+
 
 class DocumentoVerificacionSerializer(serializers.Serializer):
     tipo_documento = serializers.ChoiceField(choices=Visitante.TipoDocumento.choices)
