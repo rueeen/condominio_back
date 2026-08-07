@@ -35,6 +35,15 @@ class Usuario(AbstractUser):
             raise ValidationError(
                 "Un propietario debe tener torre y departamento asignados.")
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["torre", "departamento"],
+                condition=models.Q(rol="propietario"),
+                name="unidad_unica_por_propietario",
+            )
+        ]
+
     @property
     def unidad(self):
         """Representación legible 'Torre X, Depto Y', usada en logs y respuestas de la API."""
@@ -113,14 +122,15 @@ class Visitante(models.Model):
 # Estacionamientos (cada propietario puede tener uno o más)
 # ---------------------------------------------------------------------------
 class Estacionamiento(models.Model):
-    numero = models.CharField(max_length=10)
+    # Único a nivel global: un mismo estacionamiento físico no puede
+    # quedar asignado por error a dos propietarios distintos.
+    numero = models.CharField(max_length=10, unique=True)
     propietario = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
         related_name="estacionamientos", limit_choices_to={"rol": "propietario"}
     )
 
     class Meta:
-        unique_together = ("numero", "propietario")
         ordering = ["numero"]
 
     def __str__(self):
@@ -154,9 +164,17 @@ class Vehiculo(models.Model):
     motivo_rechazo = models.CharField(max_length=255, blank=True)
 
     class Meta:
-        # Máximo 2 patentes aprobadas o pendientes por propietario se valida en el serializer,
-        # aquí solo evitamos duplicar la misma patente para el mismo propietario.
-        unique_together = ("patente", "propietario")
+        # Una misma patente no puede tener más de una solicitud activa
+        # (pendiente o aprobada) en todo el sistema — pero si fue
+        # rechazada, se puede volver a intentar (no aplica la restricción
+        # sobre filas con estado='rechazado').
+        constraints = [
+            models.UniqueConstraint(
+                fields=["patente"],
+                condition=models.Q(estado__in=["pendiente", "aprobado"]),
+                name="patente_unica_activa",
+            )
+        ]
 
     def save(self, *args, **kwargs):
         self.patente = self.patente.upper()

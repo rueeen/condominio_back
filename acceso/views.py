@@ -45,9 +45,10 @@ class VehiculoViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        queryset = Vehiculo.objects.select_related("propietario")
         if user.rol == "admin":
-            return Vehiculo.objects.all()
-        return Vehiculo.objects.filter(propietario=user)
+            return queryset
+        return queryset.filter(propietario=user)
 
     def get_permissions(self):
         if self.action == "create":
@@ -171,7 +172,7 @@ class PropietarioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, EsAdmin]
     http_method_names = ["get", "patch", "head"]
     queryset = Usuario.objects.filter(
-        rol=Usuario.Rol.PROPIETARIO).order_by("torre", "departamento")
+        rol=Usuario.Rol.PROPIETARIO).prefetch_related("estacionamientos").order_by("torre", "departamento")
 
 
 # ---------------------------------------------------------------------------
