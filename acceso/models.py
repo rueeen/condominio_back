@@ -101,13 +101,33 @@ class Visitante(models.Model):
         related_name="visitantes", limit_choices_to={"rol": "propietario"}
     )
     fecha_inicio = models.DateTimeField(default=timezone.now)
-    fecha_fin = models.DateTimeField()
+    fecha_fin = models.DateTimeField(blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 
+    @classmethod
+    def validar_vigencia(cls, fecha_inicio=None, fecha_fin=None):
+        """Completa y valida el rango de vigencia de una visita."""
+        fecha_inicio = fecha_inicio or timezone.now()
+        fecha_fin = fecha_fin or fecha_inicio + timedelta(hours=4)
+
+        errores = {}
+        if not timezone.is_aware(fecha_inicio):
+            errores["fecha_inicio"] = "La fecha de inicio debe incluir zona horaria."
+        if not timezone.is_aware(fecha_fin):
+            errores["fecha_fin"] = "La fecha de fin debe incluir zona horaria."
+        if not errores and fecha_fin <= fecha_inicio:
+            errores["fecha_fin"] = (
+                "La fecha de fin debe ser estrictamente posterior a la fecha de inicio."
+            )
+        if errores:
+            raise ValidationError(errores)
+
+        return fecha_inicio, fecha_fin
+
     def save(self, *args, **kwargs):
-        # Si no se especifica, la vigencia por defecto es 4 horas
-        if not self.fecha_fin:
-            self.fecha_fin = self.fecha_inicio + timedelta(hours=4)
+        self.fecha_inicio, self.fecha_fin = self.validar_vigencia(
+            self.fecha_inicio, self.fecha_fin
+        )
         super().save(*args, **kwargs)
 
     @property
