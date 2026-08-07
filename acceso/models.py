@@ -121,6 +121,14 @@ class Visitante(models.Model):
 # ---------------------------------------------------------------------------
 # Estacionamientos (cada propietario puede tener uno o más)
 # ---------------------------------------------------------------------------
+
+# Cuántas patentes activas (pendientes o aprobadas) se permiten por cada
+# estacionamiento asignado. Ajustable acá si el condominio cambia la
+# política (ej. subirlo a 3 para unidades con más de un vehículo por
+# espacio en distintos horarios).
+MAX_PATENTES_POR_ESTACIONAMIENTO = 2
+
+
 class Estacionamiento(models.Model):
     # Único a nivel global: un mismo estacionamiento físico no puede
     # quedar asignado por error a dos propietarios distintos.

@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
+from .models import MAX_PATENTES_POR_ESTACIONAMIENTO, Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
     CondominioTokenObtainPairSerializer,
@@ -41,7 +41,10 @@ class VisitanteViewSet(viewsets.ModelViewSet):
 class VehiculoViewSet(viewsets.ModelViewSet):
     serializer_class = VehiculoSerializer
     permission_classes = [IsAuthenticated]
-    http_method_names = ["get", "post", "head"]  # sin update/delete directo
+    # sin update directo (PATCH/PUT) — el estado solo cambia vía /resolver/;
+    # "delete" sí se permite para que el propietario pueda eliminar/liberar
+    # una patente propia (el queryset ya lo limita a las suyas).
+    http_method_names = ["get", "post", "delete", "head"]
 
     def get_queryset(self):
         user = self.request.user
@@ -51,7 +54,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         return queryset.filter(propietario=user)
 
     def get_permissions(self):
-        if self.action == "create":
+        if self.action in ("create", "destroy"):
             return [IsAuthenticated(), EsPropietario()]
         return [IsAuthenticated()]
 
@@ -198,4 +201,7 @@ class MisEstacionamientosView(APIView):
     def get(self, request):
         numeros = list(
             request.user.estacionamientos.values_list("numero", flat=True))
-        return Response({"estacionamientos": numeros, "limite_patentes": len(numeros)})
+        return Response({
+            "estacionamientos": numeros,
+            "limite_patentes": len(numeros) * MAX_PATENTES_POR_ESTACIONAMIENTO,
+        })

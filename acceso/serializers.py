@@ -1,7 +1,15 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante, enmascarar_rut
+from .models import (
+    MAX_PATENTES_POR_ESTACIONAMIENTO,
+    Estacionamiento,
+    IngresoLog,
+    Usuario,
+    Vehiculo,
+    Visitante,
+    enmascarar_rut,
+)
 
 
 class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -85,16 +93,18 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 vehiculos_activos = vehiculos_activos.exclude(
                     pk=self.instance.pk)
 
-            limite = user.estacionamientos.count()
-            if limite == 0:
+            num_estacionamientos = user.estacionamientos.count()
+            if num_estacionamientos == 0:
                 raise serializers.ValidationError(
                     "Tu unidad no tiene estacionamientos asignados — no puedes "
                     "registrar vehículos. Contacta al administrador si esto es un error."
                 )
+            limite = num_estacionamientos * MAX_PATENTES_POR_ESTACIONAMIENTO
             if vehiculos_activos.count() >= limite:
                 raise serializers.ValidationError(
                     f"Ya alcanzaste el máximo de {limite} vehículo(s) registrado(s) "
-                    f"o pendiente(s), según la cantidad de estacionamientos de tu unidad."
+                    f"o pendiente(s) ({MAX_PATENTES_POR_ESTACIONAMIENTO} por cada uno de "
+                    f"tus {num_estacionamientos} estacionamiento(s))."
                 )
 
         return attrs
@@ -135,11 +145,11 @@ class IngresoLogSerializer(serializers.ModelSerializer):
 
 class PropietarioSerializer(serializers.ModelSerializer):
     """
-    Uso exclusivo del admin para gestionar torre/departamento. Expone lo
-    mínimo indispensable — nunca contraseña, email, ni datos de sus
-    visitas o vehículos. Los estacionamientos se listan (solo lectura,
-    números) para que el admin vea de un vistazo cuántos le corresponden;
-    se administran aparte vía /api/estacionamientos/.
+    Uso exclusivo del admin para gestionar torre/departamento y nombre.
+    Nunca expone contraseña, email, RUT, ni datos de sus visitas o
+    vehículos. Los estacionamientos se listan (solo lectura, números)
+    para que el admin vea de un vistazo cuántos le corresponden; se
+    administran aparte vía /api/estacionamientos/.
     """
     estacionamientos = serializers.SlugRelatedField(
         slug_field="numero", many=True, read_only=True)
@@ -148,8 +158,7 @@ class PropietarioSerializer(serializers.ModelSerializer):
         model = Usuario
         fields = ["id", "username", "first_name",
                   "last_name", "torre", "departamento", "estacionamientos"]
-        read_only_fields = ["id", "username",
-                            "first_name", "last_name", "estacionamientos"]
+        read_only_fields = ["id", "username", "estacionamientos"]
 
     def validate(self, attrs):
         torre = attrs.get("torre", getattr(self.instance, "torre", None))
