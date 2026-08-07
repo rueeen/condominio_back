@@ -4,6 +4,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -18,10 +19,28 @@ class Usuario(AbstractUser):
         ADMIN = "admin", "Administrador"
 
     rol = models.CharField(max_length=20, choices=Rol.choices)
-    unidad = models.CharField(
-        max_length=20, blank=True, null=True,
-        help_text="Depto/casa, solo aplica a propietarios"
+    torre = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(25)],
+        help_text="Torre del condominio (1 a 25). Solo aplica a propietarios.",
     )
+    departamento = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Número de departamento dentro de la torre. Solo aplica a propietarios.",
+    )
+
+    def clean(self):
+        super().clean()
+        if self.rol == self.Rol.PROPIETARIO and (self.torre is None or self.departamento is None):
+            raise ValidationError(
+                "Un propietario debe tener torre y departamento asignados.")
+
+    @property
+    def unidad(self):
+        """Representación legible 'Torre X, Depto Y', usada en logs y respuestas de la API."""
+        if self.torre and self.departamento:
+            return f"Torre {self.torre}, Depto {self.departamento}"
+        return ""
 
     def __str__(self):
         return f"{self.get_full_name() or self.username} ({self.rol})"
@@ -44,6 +63,22 @@ def validar_patente(value):
     if not PATENTE_REGEX.match(value.upper()):
         raise ValidationError(
             "Patente inválida. Formatos válidos: AABB11 o AA1111")
+
+
+def enmascarar_rut(rut: str) -> str:
+    """
+    Oculta parte del cuerpo del RUT para logs/auditoría, dejando el inicio
+    y el dígito verificador visibles (ej. '12345678-9' -> '12****78-9').
+    El RUT es un identificador único nacional (dato personal) y quien
+    aparece en el log de ingresos suele ser una visita, no un usuario del
+    sistema — no hay razón operativa para mostrarlo completo por defecto.
+    """
+    if not rut or "-" not in rut:
+        return rut
+    cuerpo, dv = rut.split("-", 1)
+    if len(cuerpo) <= 4:
+        return rut
+    return f"{cuerpo[:2]}{'*' * (len(cuerpo) - 4)}{cuerpo[-2:]}-{dv}"
 
 
 # ---------------------------------------------------------------------------

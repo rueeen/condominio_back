@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .ocr import DetectarPatenteView, LeerPatenteView
 from .views import (
     IngresoLogViewSet,
+    PropietarioViewSet,
     VehiculoViewSet,
     VerificarPatenteView,
     VerificarRutView,
@@ -14,6 +15,7 @@ router = DefaultRouter()
 router.register("visitantes", VisitanteViewSet, basename="visitante")
 router.register("vehiculos", VehiculoViewSet, basename="vehiculo")
 router.register("ingresos", IngresoLogViewSet, basename="ingreso")
+router.register("propietarios", PropietarioViewSet, basename="propietario")
 
 urlpatterns = [
     path("", include(router.urls)),
@@ -32,7 +34,9 @@ urlpatterns = [
 # GET/PATCH  /visitantes/{id}/            (propietario)
 # GET/POST   /vehiculos/                  (propietario crea, admin lista todo)
 # POST       /vehiculos/{id}/resolver/    (admin aprueba/rechaza)
-# GET        /ingresos/                   (admin, historial/auditoría)
+# GET        /ingresos/                   (admin, historial/auditoría — RUT enmascarado)
+# GET        /propietarios/               (admin, lista con torre/departamento)
+# PATCH      /propietarios/{id}/          (admin, edita torre/departamento)
 # POST       /guardia/verificar-rut/      (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
 # POST       /ocr/leer-patente/           (guardia, sube foto -> lee y devuelve la patente)

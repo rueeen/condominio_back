@@ -6,11 +6,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import IngresoLog, Vehiculo, Visitante
+from .models import IngresoLog, Usuario, Vehiculo, Visitante
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
     CondominioTokenObtainPairSerializer,
     IngresoLogSerializer,
+    PropietarioSerializer,
     VehiculoResolverSerializer,
     VehiculoSerializer,
     VisitanteSerializer,
@@ -153,3 +154,20 @@ class IngresoLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = IngresoLogSerializer
     permission_classes = [IsAuthenticated, EsAdmin]
     queryset = IngresoLog.objects.all()
+
+
+# ---------------------------------------------------------------------------
+# Admin: gestión de torre/departamento de los propietarios
+# ---------------------------------------------------------------------------
+class PropietarioViewSet(viewsets.ModelViewSet):
+    """
+    Solo lista y edita torre/departamento — no crea ni elimina cuentas
+    (eso se sigue haciendo desde /admin/ de Django, donde también se
+    define usuario/contraseña). No expone RUT, email ni datos de las
+    visitas o vehículos del propietario.
+    """
+    serializer_class = PropietarioSerializer
+    permission_classes = [IsAuthenticated, EsAdmin]
+    http_method_names = ["get", "patch", "head"]
+    queryset = Usuario.objects.filter(
+        rol=Usuario.Rol.PROPIETARIO).order_by("torre", "departamento")
