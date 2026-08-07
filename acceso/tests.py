@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from acceso import ocr
+from acceso.models import Estacionamiento, Vehiculo
 
 
 class CondominioTokenObtainPairTests(TestCase):
@@ -235,3 +236,117 @@ class OCRPatenteTests(TestCase):
     @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
     def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
         self.assertIsNone(ocr.extraer_patente(self._imagen_bytes()))
+
+
+class VehiculoEstacionamientoInvariantTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.admin = user_model.objects.create_user(
+            username="admin-invariante", password="clave", rol="admin"
+        )
+        self.propietario = user_model.objects.create_user(
+            username="propietario-invariante", password="clave", rol="propietario",
+            torre=20, departamento=201,
+        )
+        self.otro = user_model.objects.create_user(
+            username="otro-propietario", password="clave", rol="propietario",
+            torre=20, departamento=202,
+        )
+        self.client = APIClient()
+
+    def solicitar(self, patente):
+        self.client.force_authenticate(self.propietario)
+        return self.client.post("/api/vehiculos/", {"patente": patente}, format="json")
+
+    def resolver(self, vehiculo, **datos):
+        self.client.force_authenticate(self.admin)
+        return self.client.post(
+            f"/api/vehiculos/{vehiculo.pk}/resolver/", datos, format="json"
+        )
+
+    def test_propietario_sin_estacionamiento_no_puede_solicitar(self):
+        self.assertEqual(self.solicitar("ABCD10").status_code, 400)
+
+    def test_un_estacionamiento_admite_limite_exacto_y_no_mas(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+
+        self.assertEqual(self.solicitar("ABCD11").status_code, 201)
+        self.assertEqual(self.solicitar("ABCD12").status_code, 201)
+        self.assertEqual(self.solicitar("ABCD13").status_code, 400)
+
+    def test_varios_estacionamientos_multiplican_el_limite(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        Estacionamiento.objects.create(numero="A2", propietario=self.propietario)
+
+        for patente in ("BCDF11", "BCDF12", "BCDF13", "BCDF14"):
+            self.assertEqual(self.solicitar(patente).status_code, 201)
+        self.assertEqual(self.solicitar("BCDF15").status_code, 400)
+
+    def test_no_elimina_estacionamiento_si_provoca_exceso(self):
+        primero = Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        Estacionamiento.objects.create(numero="A2", propietario=self.propietario)
+        for patente in ("CDFG11", "CDFG12", "CDFG13"):
+            Vehiculo.objects.create(patente=patente, propietario=self.propietario)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f"/api/estacionamientos/{primero.pk}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Estacionamiento.objects.filter(pk=primero.pk).exists())
+
+    def test_reasignacion_invalida_conserva_propietario_anterior(self):
+        primero = Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        Estacionamiento.objects.create(numero="A2", propietario=self.propietario)
+        for patente in ("DFGH11", "DFGH12", "DFGH13"):
+            Vehiculo.objects.create(patente=patente, propietario=self.propietario)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            f"/api/estacionamientos/{primero.pk}/",
+            {"propietario": self.otro.pk}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        primero.refresh_from_db()
+        self.assertEqual(primero.propietario, self.propietario)
+
+    def test_no_resuelve_dos_veces_una_aprobacion(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        vehiculo = Vehiculo.objects.create(patente="EFGH11", propietario=self.propietario)
+
+        self.assertEqual(self.resolver(vehiculo, aprobar=True).status_code, 200)
+        self.assertEqual(self.resolver(vehiculo, aprobar=True).status_code, 400)
+
+    def test_no_resuelve_dos_veces_un_rechazo(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        vehiculo = Vehiculo.objects.create(patente="FGHJ11", propietario=self.propietario)
+
+        self.assertEqual(
+            self.resolver(vehiculo, aprobar=False, motivo_rechazo="Documento inválido").status_code,
+            200,
+        )
+        self.assertEqual(
+            self.resolver(vehiculo, aprobar=False, motivo_rechazo="Otro").status_code,
+            400,
+        )
+
+    def test_rechazo_exige_motivo(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+        vehiculo = Vehiculo.objects.create(patente="GHJK11", propietario=self.propietario)
+
+        response = self.resolver(vehiculo, aprobar=False)
+
+        self.assertEqual(response.status_code, 400)
+        vehiculo.refresh_from_db()
+        self.assertEqual(vehiculo.estado, Vehiculo.Estado.PENDIENTE)
+
+    def test_aprobacion_revalida_limite_y_limpia_motivo(self):
+        vehiculo = Vehiculo.objects.create(
+            patente="HJKL11", propietario=self.propietario, motivo_rechazo="anterior"
+        )
+        self.assertEqual(self.resolver(vehiculo, aprobar=True).status_code, 400)
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+
+        self.assertEqual(self.resolver(vehiculo, aprobar=True).status_code, 200)
+        vehiculo.refresh_from_db()
+        self.assertEqual(vehiculo.motivo_rechazo, "")

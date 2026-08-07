@@ -1,8 +1,10 @@
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -58,23 +60,62 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated(), EsPropietario()]
         return [IsAuthenticated()]
 
+    def perform_create(self, serializer):
+        # La fila del propietario funciona como el lock común para altas,
+        # resoluciones y cambios de estacionamientos de esa unidad.
+        with transaction.atomic():
+            propietario = Usuario.objects.select_for_update().get(
+                pk=self.request.user.pk
+            )
+            estacionamientos = Estacionamiento.objects.filter(
+                propietario=propietario
+            ).count()
+            activos = Vehiculo.objects.filter(
+                propietario=propietario,
+                estado__in=[Vehiculo.Estado.PENDIENTE, Vehiculo.Estado.APROBADO],
+            ).count()
+            limite = estacionamientos * MAX_PATENTES_POR_ESTACIONAMIENTO
+            if activos >= limite:
+                raise ValidationError(
+                    {"detail": f"La unidad alcanzó el límite de {limite} patentes activas."}
+                )
+            serializer.save(propietario=propietario)
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated, EsAdmin])
     def resolver(self, request, pk=None):
         """Endpoint para que el admin apruebe/rechace: POST /vehiculos/{id}/resolver/"""
-        vehiculo = self.get_object()
         serializer = VehiculoResolverSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        if serializer.validated_data["aprobar"]:
-            vehiculo.estado = Vehiculo.Estado.APROBADO
-        else:
-            vehiculo.estado = Vehiculo.Estado.RECHAZADO
-            vehiculo.motivo_rechazo = serializer.validated_data.get(
-                "motivo_rechazo", "")
+        with transaction.atomic():
+            vehiculo = Vehiculo.objects.select_for_update().get(pk=pk)
+            propietario = Usuario.objects.select_for_update().get(
+                pk=vehiculo.propietario_id
+            )
+            if vehiculo.estado != Vehiculo.Estado.PENDIENTE:
+                raise ValidationError(
+                    {"detail": "Solo se puede resolver un vehículo pendiente."}
+                )
 
-        vehiculo.aprobado_por = request.user
-        vehiculo.fecha_resolucion = timezone.now()
-        vehiculo.save()
+            if serializer.validated_data["aprobar"]:
+                activos = Vehiculo.objects.filter(
+                    propietario=propietario,
+                    estado__in=[Vehiculo.Estado.PENDIENTE, Vehiculo.Estado.APROBADO],
+                ).count()
+                limite = propietario.estacionamientos.count() * MAX_PATENTES_POR_ESTACIONAMIENTO
+                if activos > limite:
+                    raise ValidationError(
+                        {"detail": f"La aprobación excedería el límite de {limite} patentes activas."}
+                    )
+                vehiculo.estado = Vehiculo.Estado.APROBADO
+                vehiculo.motivo_rechazo = ""
+            else:
+                vehiculo.estado = Vehiculo.Estado.RECHAZADO
+                vehiculo.motivo_rechazo = serializer.validated_data["motivo_rechazo"].strip()
+
+            vehiculo.aprobado_por = request.user
+            vehiculo.fecha_resolucion = timezone.now()
+            vehiculo.save()
         return Response(VehiculoSerializer(vehiculo).data)
 
 
@@ -190,6 +231,60 @@ class EstacionamientoViewSet(viewsets.ModelViewSet):
     serializer_class = EstacionamientoSerializer
     permission_classes = [IsAuthenticated, EsAdmin]
     queryset = Estacionamiento.objects.all()
+
+    @staticmethod
+    def _lock_propietarios(*propietario_ids):
+        ids = sorted(set(propietario_ids))
+        return {
+            propietario.pk: propietario
+            for propietario in Usuario.objects.select_for_update().filter(pk__in=ids)
+        }
+
+    @staticmethod
+    def _validar_limite(propietario, cantidad_estacionamientos):
+        activos = Vehiculo.objects.filter(
+            propietario=propietario,
+            estado__in=[Vehiculo.Estado.PENDIENTE, Vehiculo.Estado.APROBADO],
+        ).count()
+        limite = cantidad_estacionamientos * MAX_PATENTES_POR_ESTACIONAMIENTO
+        if activos > limite:
+            raise ValidationError({
+                "detail": (
+                    f"La operación dejaría {activos} patentes activas para un límite de {limite}."
+                )
+            })
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            estacionamiento = Estacionamiento.objects.select_for_update().get(
+                pk=serializer.instance.pk
+            )
+            anterior_id = estacionamiento.propietario_id
+            nuevo_id = serializer.validated_data.get(
+                "propietario", estacionamiento.propietario
+            ).pk
+            propietarios = self._lock_propietarios(anterior_id, nuevo_id)
+            if anterior_id != nuevo_id:
+                cantidad_anterior = Estacionamiento.objects.filter(
+                    propietario_id=anterior_id
+                ).count() - 1
+                cantidad_nueva = Estacionamiento.objects.filter(
+                    propietario_id=nuevo_id
+                ).count() + 1
+                self._validar_limite(propietarios[anterior_id], cantidad_anterior)
+                self._validar_limite(propietarios[nuevo_id], cantidad_nueva)
+            serializer.instance = estacionamiento
+            serializer.save()
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            estacionamiento = Estacionamiento.objects.select_for_update().get(pk=instance.pk)
+            propietario = self._lock_propietarios(estacionamiento.propietario_id)[
+                estacionamiento.propietario_id
+            ]
+            cantidad = Estacionamiento.objects.filter(propietario=propietario).count() - 1
+            self._validar_limite(propietario, cantidad)
+            estacionamiento.delete()
 
 
 # ---------------------------------------------------------------------------
