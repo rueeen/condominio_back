@@ -6,13 +6,16 @@ import numpy as np
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from acceso import ocr
 from acceso.models import Estacionamiento, Vehiculo
+from acceso.models import Visitante, normalizar_documento
 
 
 class CondominioTokenObtainPairTests(TestCase):
@@ -106,7 +109,11 @@ class VisitanteVigenciaTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.propietario)
         self.url = "/api/visitantes/"
-        self.datos_base = {"rut": "12345678-9", "nombre": "Visita"}
+        self.datos_base = {
+            "tipo_documento": "rut",
+            "numero_documento": "12345678-5",
+            "nombre": "Visita",
+        }
 
     def _crear(self, **fechas):
         return self.client.post(
@@ -205,6 +212,126 @@ class VisitanteVigenciaTests(TestCase):
         self.assertIn("estrictamente posterior", str(response.data["fecha_fin"][0]))
         visita.refresh_from_db()
         self.assertEqual(visita.fecha_fin, fin_original)
+
+
+class DocumentoVisitanteTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.propietario = user_model.objects.create_user(
+            username="prop-doc", rol="propietario", torre=2, departamento=202
+        )
+        self.guardia = user_model.objects.create_user(
+            username="guardia-doc", rol="guardia"
+        )
+        self.client = APIClient()
+
+    def crear(self, tipo, numero, **extra):
+        self.client.force_authenticate(self.propietario)
+        return self.client.post(
+            "/api/visitantes/",
+            {
+                "tipo_documento": tipo,
+                "numero_documento": numero,
+                "nombre": "Persona visitante",
+                **extra,
+            },
+            format="json",
+        )
+
+    def test_rut_valido_se_normaliza(self):
+        response = self.crear("rut", "12345678-5")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "12345678-5")
+
+    def test_rechaza_rut_con_dv_incorrecto(self):
+        response = self.crear("rut", "12345678-9")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("verificador", str(response.data["numero_documento"]))
+
+    def test_rut_con_puntos_se_normaliza(self):
+        response = self.crear("rut", "12.345.678-5")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "12345678-5")
+
+    def test_rut_acepta_k_minuscula(self):
+        response = self.crear("rut", "6.000.000-k")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "6000000-K")
+
+    def test_pasaporte_normaliza_mayusculas_y_espacios(self):
+        response = self.crear("pasaporte", "  pa   123456  ", pais_documento="Canadá")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "PA 123456")
+        self.assertEqual(response.data["pais_documento"], "Canadá")
+
+    def test_dni_extranjero_no_aplica_reglas_de_rut(self):
+        response = self.crear("dni", "xy-88.123/4", pais_documento="Argentina")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "XY-88.123/4")
+
+    def test_documento_otro_permite_pais_vacio(self):
+        response = self.crear("otro", " credencial-77 ")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["numero_documento"], "CREDENCIAL-77")
+        self.assertEqual(response.data["pais_documento"], "")
+
+    def test_rechaza_documento_vacio(self):
+        response = self.crear("pasaporte", "   ")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("numero_documento", response.data)
+
+    def test_evitar_documento_duplicado_para_mismo_propietario(self):
+        self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
+        response = self.crear("pasaporte", " AB   123 ")
+        self.assertEqual(response.status_code, 400)
+
+    def test_guardia_encuentra_autorizacion_extranjera_normalizada(self):
+        self.assertEqual(self.crear("pasaporte", "pa123456").status_code, 201)
+        self.client.force_authenticate(self.guardia)
+        response = self.client.post(
+            "/api/guardia/verificar-rut/",
+            {"tipo_documento": "pasaporte", "numero_documento": " pa123456 "},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["permitido"])
+
+    def test_normalizador_no_impone_formato_dni_por_pais(self):
+        self.assertEqual(normalizar_documento("dni", "a-1/234.zz"), "A-1/234.ZZ")
+
+
+class MigracionDocumentoVisitanteTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_migracion_conserva_rut_y_registro_existente(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0005_alter_visitante_fecha_fin")])
+        estado_anterior = executor.loader.project_state(
+            [("acceso", "0005_alter_visitante_fecha_fin")]
+        ).apps
+        UsuarioAnterior = estado_anterior.get_model("acceso", "Usuario")
+        VisitanteAnterior = estado_anterior.get_model("acceso", "Visitante")
+        propietario = UsuarioAnterior.objects.create(
+            username="prop-migracion", rol="propietario", torre=3, departamento=301
+        )
+        visitante = VisitanteAnterior.objects.create(
+            rut="12345678-5",
+            nombre="Visita histórica",
+            propietario=propietario,
+            fecha_inicio=timezone.now(),
+            fecha_fin=timezone.now() + timedelta(hours=1),
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0006_documentos_visitante")])
+        estado_nuevo = executor.loader.project_state(
+            [("acceso", "0006_documentos_visitante")]
+        ).apps
+        VisitanteNuevo = estado_nuevo.get_model("acceso", "Visitante")
+        migrado = VisitanteNuevo.objects.get(pk=visitante.pk)
+        self.assertEqual(migrado.tipo_documento, "rut")
+        self.assertEqual(migrado.numero_documento, "12345678-5")
+        self.assertEqual(migrado.nombre, "Visita histórica")
 
 class OCRPatenteTests(TestCase):
     def _imagen_bytes(self):

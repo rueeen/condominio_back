@@ -19,10 +19,10 @@ class UsuarioAdmin(UserAdmin):
 
 @admin.register(Visitante)
 class VisitanteAdmin(admin.ModelAdmin):
-    list_display = ('rut', 'nombre', 'propietario',
+    list_display = ('tipo_documento', 'numero_documento', 'pais_documento', 'nombre', 'propietario',
                     'fecha_inicio', 'fecha_fin', 'creado_en')
     list_filter = ('fecha_inicio', 'fecha_fin', 'creado_en')
-    search_fields = ('rut', 'nombre', 'propietario__username',
+    search_fields = ('numero_documento', 'pais_documento', 'nombre', 'propietario__username',
                      'propietario__torre', 'propietario__departamento')
 
 
