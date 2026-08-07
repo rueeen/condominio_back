@@ -6,10 +6,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import IngresoLog, Usuario, Vehiculo, Visitante
+from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
     CondominioTokenObtainPairSerializer,
+    EstacionamientoSerializer,
     IngresoLogSerializer,
     PropietarioSerializer,
     VehiculoResolverSerializer,
@@ -171,3 +172,29 @@ class PropietarioViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "patch", "head"]
     queryset = Usuario.objects.filter(
         rol=Usuario.Rol.PROPIETARIO).order_by("torre", "departamento")
+
+
+# ---------------------------------------------------------------------------
+# Admin: gestión de estacionamientos (uno o más por propietario)
+# ---------------------------------------------------------------------------
+class EstacionamientoViewSet(viewsets.ModelViewSet):
+    """
+    CRUD completo, solo admin. La cantidad de estacionamientos de un
+    propietario determina cuántas patentes puede registrar
+    (ver VehiculoSerializer.validate).
+    """
+    serializer_class = EstacionamientoSerializer
+    permission_classes = [IsAuthenticated, EsAdmin]
+    queryset = Estacionamiento.objects.all()
+
+
+# ---------------------------------------------------------------------------
+# Propietario: consulta (solo lectura) de sus propios estacionamientos
+# ---------------------------------------------------------------------------
+class MisEstacionamientosView(APIView):
+    permission_classes = [IsAuthenticated, EsPropietario]
+
+    def get(self, request):
+        numeros = list(
+            request.user.estacionamientos.values_list("numero", flat=True))
+        return Response({"estacionamientos": numeros, "limite_patentes": len(numeros)})

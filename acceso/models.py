@@ -110,6 +110,24 @@ class Visitante(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Estacionamientos (cada propietario puede tener uno o más)
+# ---------------------------------------------------------------------------
+class Estacionamiento(models.Model):
+    numero = models.CharField(max_length=10)
+    propietario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="estacionamientos", limit_choices_to={"rol": "propietario"}
+    )
+
+    class Meta:
+        unique_together = ("numero", "propietario")
+        ordering = ["numero"]
+
+    def __str__(self):
+        return f"Estacionamiento {self.numero} - {self.propietario.unidad}"
+
+
+# ---------------------------------------------------------------------------
 # Vehículos (requieren aprobación de administrador)
 # ---------------------------------------------------------------------------
 class Vehiculo(models.Model):

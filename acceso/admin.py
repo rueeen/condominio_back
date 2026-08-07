@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import IngresoLog, Usuario, Vehiculo, Visitante
+from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
 
 
 @admin.register(Usuario)
@@ -41,3 +41,11 @@ class IngresoLogAdmin(admin.ModelAdmin):
                     'resultado', 'guardia', 'timestamp')
     list_filter = ('tipo', 'resultado', 'timestamp')
     search_fields = ('valor_ingresado', 'detalle', 'guardia__username')
+
+
+@admin.register(Estacionamiento)
+class EstacionamientoAdmin(admin.ModelAdmin):
+    list_display = ('numero', 'propietario')
+    search_fields = ('numero', 'propietario__username',
+                     'propietario__torre', 'propietario__departamento')
+    list_filter = ('propietario__torre',)

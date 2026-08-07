@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import IngresoLog, Usuario, Vehiculo, Visitante, enmascarar_rut
+from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante, enmascarar_rut
 
 
 class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -12,6 +12,13 @@ class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
         token["username"] = user.username
         token["unidad"] = user.unidad
         return token
+
+
+class EstacionamientoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Estacionamiento
+        fields = ["id", "numero", "propietario"]
+        read_only_fields = ["id"]
 
 
 class VisitanteSerializer(serializers.ModelSerializer):
@@ -78,9 +85,16 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 vehiculos_activos = vehiculos_activos.exclude(
                     pk=self.instance.pk)
 
-            if vehiculos_activos.count() >= 2:
+            limite = user.estacionamientos.count()
+            if limite == 0:
                 raise serializers.ValidationError(
-                    "Ya alcanzaste el máximo de 2 vehículos registrados o pendientes."
+                    "Tu unidad no tiene estacionamientos asignados — no puedes "
+                    "registrar vehículos. Contacta al administrador si esto es un error."
+                )
+            if vehiculos_activos.count() >= limite:
+                raise serializers.ValidationError(
+                    f"Ya alcanzaste el máximo de {limite} vehículo(s) registrado(s) "
+                    f"o pendiente(s), según la cantidad de estacionamientos de tu unidad."
                 )
 
         return attrs
@@ -123,13 +137,19 @@ class PropietarioSerializer(serializers.ModelSerializer):
     """
     Uso exclusivo del admin para gestionar torre/departamento. Expone lo
     mínimo indispensable — nunca contraseña, email, ni datos de sus
-    visitas o vehículos.
+    visitas o vehículos. Los estacionamientos se listan (solo lectura,
+    números) para que el admin vea de un vistazo cuántos le corresponden;
+    se administran aparte vía /api/estacionamientos/.
     """
+    estacionamientos = serializers.SlugRelatedField(
+        slug_field="numero", many=True, read_only=True)
+
     class Meta:
         model = Usuario
         fields = ["id", "username", "first_name",
-                  "last_name", "torre", "departamento"]
-        read_only_fields = ["id", "username", "first_name", "last_name"]
+                  "last_name", "torre", "departamento", "estacionamientos"]
+        read_only_fields = ["id", "username",
+                            "first_name", "last_name", "estacionamientos"]
 
     def validate(self, attrs):
         torre = attrs.get("torre", getattr(self.instance, "torre", None))

@@ -3,7 +3,9 @@ from rest_framework.routers import DefaultRouter
 
 from .ocr import DetectarPatenteView, LeerPatenteView
 from .views import (
+    EstacionamientoViewSet,
     IngresoLogViewSet,
+    MisEstacionamientosView,
     PropietarioViewSet,
     VehiculoViewSet,
     VerificarPatenteView,
@@ -16,9 +18,14 @@ router.register("visitantes", VisitanteViewSet, basename="visitante")
 router.register("vehiculos", VehiculoViewSet, basename="vehiculo")
 router.register("ingresos", IngresoLogViewSet, basename="ingreso")
 router.register("propietarios", PropietarioViewSet, basename="propietario")
+router.register("estacionamientos", EstacionamientoViewSet,
+                basename="estacionamiento")
 
 urlpatterns = [
     path("", include(router.urls)),
+
+    path("mis-estacionamientos/", MisEstacionamientosView.as_view(),
+         name="mis-estacionamientos"),
 
     # Guardia
     path("guardia/verificar-rut/", VerificarRutView.as_view(), name="verificar-rut"),
@@ -35,8 +42,11 @@ urlpatterns = [
 # GET/POST   /vehiculos/                  (propietario crea, admin lista todo)
 # POST       /vehiculos/{id}/resolver/    (admin aprueba/rechaza)
 # GET        /ingresos/                   (admin, historial/auditoría — RUT enmascarado)
-# GET        /propietarios/               (admin, lista con torre/departamento)
+# GET        /propietarios/               (admin, lista con torre/departamento/estacionamientos)
 # PATCH      /propietarios/{id}/          (admin, edita torre/departamento)
+# GET/POST   /estacionamientos/           (admin, CRUD completo)
+# GET/PATCH/DELETE /estacionamientos/{id}/ (admin)
+# GET        /mis-estacionamientos/       (propietario, solo lectura: sus propios números)
 # POST       /guardia/verificar-rut/      (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
 # POST       /ocr/leer-patente/           (guardia, sube foto -> lee y devuelve la patente)
