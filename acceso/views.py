@@ -16,6 +16,7 @@ from .serializers import (
     EstacionamientoSerializer,
     GuardiaSerializer,
     IngresoLogSerializer,
+    PropietarioAltaSerializer,
     PropietarioSerializer,
     VehiculoResolverSerializer,
     VehiculoSerializer,
@@ -264,16 +265,18 @@ class IngresoLogViewSet(viewsets.ReadOnlyModelViewSet):
 # ---------------------------------------------------------------------------
 class PropietarioViewSet(viewsets.ModelViewSet):
     """
-    Solo lista y edita torre/departamento — no crea ni elimina cuentas
-    (eso se sigue haciendo desde /admin/ de Django, donde también se
-    define usuario/contraseña). No expone RUT, email ni datos de las
-    visitas o vehículos del propietario.
+    Solo admin. Crea, lista y edita cuentas de propietario. No expone RUT,
+    email ni datos de las visitas o vehículos del propietario.
     """
-    serializer_class = PropietarioSerializer
     permission_classes = [IsAuthenticated, EsAdmin]
-    http_method_names = ["get", "patch", "head"]
+    http_method_names = ["get", "post", "patch", "head"]
     queryset = Usuario.objects.filter(
         rol=Usuario.Rol.PROPIETARIO).prefetch_related("estacionamientos").order_by("torre", "departamento")
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return PropietarioAltaSerializer
+        return PropietarioSerializer
 
 
 # ---------------------------------------------------------------------------

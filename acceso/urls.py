@@ -44,7 +44,7 @@ urlpatterns = [
 # GET/POST   /vehiculos/                  (propietario crea, admin lista todo)
 # POST       /vehiculos/{id}/resolver/    (admin aprueba/rechaza)
 # GET        /ingresos/                   (admin, historial/auditoría — RUT enmascarado)
-# GET        /propietarios/               (admin, lista con torre/departamento/estacionamientos)
+# GET/POST   /propietarios/               (admin, lista y crea propietarios)
 # PATCH      /propietarios/{id}/          (admin, edita torre/departamento)
 # GET/POST   /estacionamientos/           (admin, CRUD completo)
 # GET/PATCH/DELETE /estacionamientos/{id}/ (admin)

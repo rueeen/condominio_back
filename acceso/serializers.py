@@ -272,3 +272,44 @@ class PropietarioSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Un propietario debe tener torre y departamento asignados.")
         return attrs
+
+
+class PropietarioAltaSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "password",
+            "torre",
+            "departamento",
+        ]
+
+    def validate(self, attrs):
+        torre = attrs.get("torre")
+        departamento = attrs.get("departamento")
+        if torre is None or departamento is None:
+            raise serializers.ValidationError(
+                "Un propietario debe tener torre y departamento asignados."
+            )
+        return attrs
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        usuario = Usuario(rol=Usuario.Rol.PROPIETARIO, **validated_data)
+        usuario.set_password(password)
+        try:
+            usuario.full_clean(exclude=["password"])
+            usuario.save()
+        except DjangoValidationError as error:
+            detail = (
+                error.message_dict
+                if hasattr(error, "message_dict")
+                else error.messages
+            )
+            raise serializers.ValidationError(detail) from error
+        return usuario
