@@ -24,6 +24,21 @@ class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
 
+class GuardiaSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    class Meta:
+        model = Usuario
+        fields = ["id", "username", "first_name", "last_name", "password"]
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        usuario = Usuario(rol=Usuario.Rol.GUARDIA, **validated_data)
+        usuario.set_password(password)
+        usuario.save()
+        return usuario
+
+
 class EstacionamientoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Estacionamiento

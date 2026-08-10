@@ -14,6 +14,7 @@ from .serializers import (
     CondominioTokenObtainPairSerializer,
     DocumentoVerificacionSerializer,
     EstacionamientoSerializer,
+    GuardiaSerializer,
     IngresoLogSerializer,
     PropietarioSerializer,
     VehiculoResolverSerializer,
@@ -31,6 +32,19 @@ class HealthCheckView(APIView):
 
     def get(self, request):
         return Response({"status": "ok"})
+
+
+class GuardiaViewSet(viewsets.ModelViewSet):
+    """
+    Solo admin. Crea y lista cuentas de guardia — no permite editar ni
+    borrar por ahora (para eso sigue estando /admin/ de Django).
+    """
+    serializer_class = GuardiaSerializer
+    permission_classes = [IsAuthenticated, EsAdmin]
+    http_method_names = ["get", "post", "head"]
+    queryset = Usuario.objects.filter(
+        rol=Usuario.Rol.GUARDIA
+    ).order_by("username")
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +74,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         user = self.request.user
         queryset = Vehiculo.objects.select_related(
             "propietario").order_by("-fecha_solicitud")
-        if user.rol == "admin":
-            return queryset
-        return queryset.filter(propietario=user)
+        if user.rol != "admin":
+            queryset = queryset.filter(propietario=user)
+
+        estado = self.request.query_params.get("estado")
+        if estado in dict(Vehiculo.Estado.choices):
+            queryset = queryset.filter(estado=estado)
+        return queryset
 
     def get_permissions(self):
         if self.action in ("create", "destroy"):
