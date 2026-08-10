@@ -10,6 +10,7 @@ from .views import (
     PropietarioViewSet,
     VehiculoViewSet,
     VerificarPatenteView,
+    VerificarQrView,
     VerificarRutView,
     VisitanteViewSet,
 )
@@ -31,6 +32,7 @@ urlpatterns = [
 
     # Guardia
     path("guardia/verificar-rut/", VerificarRutView.as_view(), name="verificar-rut"),
+    path("guardia/verificar-qr/", VerificarQrView.as_view(), name="verificar-qr"),
     path("guardia/verificar-patente/",
          VerificarPatenteView.as_view(), name="verificar-patente"),
     path("ocr/leer-patente/", LeerPatenteView.as_view(), name="leer-patente"),
@@ -50,6 +52,7 @@ urlpatterns = [
 # GET/PATCH/DELETE /estacionamientos/{id}/ (admin)
 # GET        /mis-estacionamientos/       (propietario, solo lectura: sus propios números)
 # POST       /guardia/verificar-rut/      (guardia)
+# POST       /guardia/verificar-qr/       (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
 # POST       /ocr/leer-patente/           (guardia, sube foto -> lee y devuelve la patente)
 # POST       /ocr/detectar-patente/       (guardia, polling liviano -> solo detecta si hay

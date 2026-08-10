@@ -16,7 +16,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from acceso import ocr
-from acceso.models import Estacionamiento, Vehiculo
+from acceso.models import Estacionamiento, IngresoLog, Vehiculo
 from acceso.models import Visitante, normalizar_documento
 
 
@@ -533,6 +533,126 @@ class MigracionDocumentoVisitanteTests(TransactionTestCase):
         self.assertEqual(migrado.tipo_documento, "rut")
         self.assertEqual(migrado.numero_documento, "12345678-5")
         self.assertEqual(migrado.nombre, "Visita histórica")
+
+
+class MigracionTokenQrTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_asigna_tokens_unicos_a_visitas_existentes(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0006_documentos_visitante")])
+        apps_anteriores = executor.loader.project_state(
+            [("acceso", "0006_documentos_visitante")]
+        ).apps
+        UsuarioAnterior = apps_anteriores.get_model("acceso", "Usuario")
+        VisitanteAnterior = apps_anteriores.get_model("acceso", "Visitante")
+        propietario = UsuarioAnterior.objects.create(
+            username="prop-token-migracion", rol="propietario", torre=4, departamento=401
+        )
+        ahora = timezone.now()
+        for numero in ("12345678-5", "6000000-K"):
+            VisitanteAnterior.objects.create(
+                tipo_documento="rut", numero_documento=numero, nombre="Histórica",
+                propietario=propietario, fecha_inicio=ahora,
+                fecha_fin=ahora + timedelta(hours=1),
+            )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0007_visitante_token_qr")])
+        apps_nuevas = executor.loader.project_state(
+            [("acceso", "0007_visitante_token_qr")]
+        ).apps
+        tokens = list(
+            apps_nuevas.get_model("acceso", "Visitante").objects.values_list(
+                "token_qr", flat=True
+            )
+        )
+        self.assertEqual(len(tokens), 2)
+        self.assertEqual(len(set(tokens)), 2)
+        self.assertNotIn(None, tokens)
+
+
+class VerificacionQrGuardiaTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        usuarios = get_user_model()
+        self.propietario = usuarios.objects.create_user(
+            username="prop-qr", rol="propietario", torre=5, departamento=501
+        )
+        self.otro_propietario = usuarios.objects.create_user(
+            username="otro-prop-qr", rol="propietario", torre=5, departamento=502
+        )
+        self.guardia = usuarios.objects.create_user(username="guardia-qr", rol="guardia")
+        ahora = timezone.now()
+        self.visita = Visitante.objects.create(
+            propietario=self.propietario, tipo_documento="rut",
+            numero_documento="12345678-5", nombre="Visita QR",
+            fecha_inicio=ahora - timedelta(minutes=5),
+            fecha_fin=ahora + timedelta(hours=1),
+        )
+        self.client = APIClient()
+        self.url = "/api/guardia/verificar-qr/"
+
+    def test_propietario_recibe_solo_tokens_de_sus_visitas(self):
+        Visitante.objects.create(
+            propietario=self.otro_propietario, tipo_documento="rut",
+            numero_documento="6000000-K", nombre="Visita ajena",
+        )
+        self.client.force_authenticate(self.propietario)
+
+        response = self.client.get("/api/visitantes/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["token_qr"], str(self.visita.token_qr))
+
+    def test_token_vigente_permite_y_loguea_documento_no_token(self):
+        self.client.force_authenticate(self.guardia)
+
+        response = self.client.post(self.url, {"token": str(self.visita.token_qr)}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "permitido": True,
+            "id_autorizacion": self.visita.pk,
+            "nombre": "Visita QR",
+            "unidad": "Torre 5, Depto 501",
+            "fecha_fin": self.visita.fecha_fin,
+        })
+        ingreso = IngresoLog.objects.get()
+        self.assertEqual(ingreso.valor_ingresado, "12345678-5")
+        self.assertNotIn(str(self.visita.token_qr), ingreso.detalle)
+
+        self.client.force_authenticate(self.propietario)
+        historial = self.client.get("/api/ingresos/")
+        self.assertEqual(historial.status_code, 403)
+
+    def test_token_expirado_deniega_y_conserva_documento_en_log(self):
+        self.visita.fecha_inicio = timezone.now() - timedelta(hours=2)
+        self.visita.fecha_fin = timezone.now() - timedelta(hours=1)
+        self.visita.save()
+        self.client.force_authenticate(self.guardia)
+
+        response = self.client.post(self.url, {"token": str(self.visita.token_qr)}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["permitido"])
+        self.assertEqual(IngresoLog.objects.get().valor_ingresado, "12345678-5")
+
+    def test_token_inexistente_o_malformado_deniega_sin_error(self):
+        import uuid
+
+        self.client.force_authenticate(self.guardia)
+        for token in (str(uuid.uuid4()), "no-es-un-uuid"):
+            with self.subTest(token=token):
+                response = self.client.post(self.url, {"token": token}, format="json")
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.data["permitido"])
+
+    def test_endpoint_exige_rol_guardia(self):
+        self.client.force_authenticate(self.propietario)
+        response = self.client.post(self.url, {"token": str(self.visita.token_qr)}, format="json")
+        self.assertEqual(response.status_code, 403)
 
 class OCRPatenteTests(TestCase):
     def _imagen_bytes(self):

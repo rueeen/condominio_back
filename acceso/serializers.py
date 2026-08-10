@@ -57,13 +57,14 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "numero_documento",
             "pais_documento",
             "nombre",
+            "token_qr",
             "propietario",
             "fecha_inicio",
             "fecha_fin",
             "creado_en",
             "vigente",
         ]
-        read_only_fields = ["propietario", "creado_en", "vigente"]
+        read_only_fields = ["token_qr", "propietario", "creado_en", "vigente"]
         extra_kwargs = {
             "fecha_inicio": {"required": False},
             "fecha_fin": {"required": False},

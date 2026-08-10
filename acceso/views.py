@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -5,6 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -211,6 +214,72 @@ class VerificarRutView(APIView):
             })
         return Response({"permitido": False, "detalle": "No hay autorización vigente para este documento"},
                         status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Guardia: verificación del token opaco de una autorización de visita
+# ---------------------------------------------------------------------------
+class VerificarQrView(APIView):
+    permission_classes = [IsAuthenticated, EsGuardia]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "guardia_qr"
+
+    @staticmethod
+    def _registrar(request, visita, resultado, detalle):
+        IngresoLog.objects.create(
+            tipo=IngresoLog.Tipo.VISITA,
+            # Un intento sin autorización identificable no tiene documento
+            # que registrar; el token nunca se persiste en el historial.
+            valor_ingresado=visita.numero_documento if visita else "",
+            resultado=resultado,
+            guardia=request.user,
+            detalle=detalle,
+        )
+
+    def post(self, request):
+        try:
+            token = uuid.UUID(str(request.data.get("token", "")))
+        except (AttributeError, TypeError, ValueError):
+            self._registrar(
+                request, None, IngresoLog.Resultado.DENEGADO,
+                "Token QR inválido",
+            )
+            return Response(
+                {"permitido": False, "detalle": "Token QR inválido"},
+                status=status.HTTP_200_OK,
+            )
+
+        ahora = timezone.now()
+        visita = Visitante.objects.select_related("propietario").filter(
+            token_qr=token
+        ).first()
+        visita_vigente = visita and Visitante.objects.filter(
+            pk=visita.pk,
+            fecha_inicio__lte=ahora,
+            fecha_fin__gte=ahora,
+        ).exists()
+
+        if not visita_vigente:
+            self._registrar(
+                request, visita, IngresoLog.Resultado.DENEGADO,
+                "Sin autorización vigente vía QR",
+            )
+            return Response(
+                {"permitido": False, "detalle": "No hay autorización vigente para este código QR"},
+                status=status.HTTP_200_OK,
+            )
+
+        self._registrar(
+            request, visita, IngresoLog.Resultado.PERMITIDO,
+            "Autorización vigente verificada vía QR",
+        )
+        return Response({
+            "permitido": True,
+            "id_autorizacion": visita.pk,
+            "nombre": visita.nombre,
+            "unidad": visita.propietario.unidad,
+            "fecha_fin": visita.fecha_fin,
+        })
 
 
 # ---------------------------------------------------------------------------

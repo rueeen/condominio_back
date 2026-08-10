@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -138,6 +139,9 @@ class Visitante(models.Model):
     tipo_documento = models.CharField(max_length=12, choices=TipoDocumento.choices)
     numero_documento = models.CharField(max_length=40)
     pais_documento = models.CharField(max_length=100, blank=True)
+    token_qr = models.UUIDField(
+        default=uuid.uuid4, editable=False, unique=True, db_index=True
+    )
     nombre = models.CharField(max_length=150)
     propietario = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
