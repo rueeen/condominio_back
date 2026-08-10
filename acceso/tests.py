@@ -98,6 +98,110 @@ class ListPaginationTests(TestCase):
         self.assertEqual(len(second_page.data["results"]), 1)
 
 
+class GuardiaAdminEndpointTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        user_model = get_user_model()
+        self.admin = user_model.objects.create_user(
+            username="admin-guardias", password="clave-segura", rol="admin"
+        )
+        self.propietario = user_model.objects.create_user(
+            username="propietario-guardias", password="clave-segura",
+            rol="propietario", torre=2, departamento=201,
+        )
+        self.guardia = user_model.objects.create_user(
+            username="guardia-existente", password="clave-segura", rol="guardia"
+        )
+        self.client = APIClient()
+
+    def test_admin_crea_guardia_sin_exponer_password_y_puede_autenticarse(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            "/api/guardias/",
+            {
+                "username": "guardia-nuevo",
+                "first_name": "Ana",
+                "last_name": "Pérez",
+                "password": "secreto-seguro",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn("password", response.data)
+        usuario = get_user_model().objects.get(username="guardia-nuevo")
+        self.assertEqual(usuario.rol, "guardia")
+        self.assertTrue(usuario.check_password("secreto-seguro"))
+
+        self.client.force_authenticate(user=None)
+        token_response = self.client.post(
+            "/api/token/",
+            {"username": "guardia-nuevo", "password": "secreto-seguro"},
+            format="json",
+        )
+        self.assertEqual(token_response.status_code, 200)
+        token = AccessToken(token_response.data["access"])
+        self.assertEqual(token["rol"], "guardia")
+
+    def test_listado_tampoco_expone_password(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get("/api/guardias/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["results"])
+        self.assertTrue(all("password" not in item for item in response.data["results"]))
+
+    def test_propietario_y_guardia_no_pueden_crear_guardias(self):
+        payload = {"username": "sin-permiso", "password": "secreto-seguro"}
+        for usuario in (self.propietario, self.guardia):
+            with self.subTest(rol=usuario.rol):
+                self.client.force_authenticate(usuario)
+                response = self.client.post("/api/guardias/", payload, format="json")
+                self.assertEqual(response.status_code, 403)
+
+
+class VehiculoEstadoFilterTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.admin = user_model.objects.create_user(
+            username="admin-filtro", password="clave-segura", rol="admin"
+        )
+        self.propietario = user_model.objects.create_user(
+            username="propietario-filtro", password="clave-segura",
+            rol="propietario", torre=3, departamento=301,
+        )
+        Vehiculo.objects.bulk_create([
+            Vehiculo(patente=f"ABCD{numero:02d}", propietario=self.propietario)
+            for numero in range(51)
+        ])
+        Vehiculo.objects.create(
+            patente="WXYZ99", propietario=self.propietario,
+            estado=Vehiculo.Estado.APROBADO,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def test_filtro_pagina_solo_sobre_estado_solicitado(self):
+        response = self.client.get("/api/vehiculos/?estado=pendiente")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 51)
+        self.assertEqual(len(response.data["results"]), 50)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+        self.assertTrue(all(
+            vehiculo["estado"] == Vehiculo.Estado.PENDIENTE
+            for vehiculo in response.data["results"]
+        ))
+
+    def test_estado_invalido_se_ignora(self):
+        response = self.client.get("/api/vehiculos/?estado=inventado")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 52)
+
+
 class VisitanteVigenciaTests(TestCase):
     def setUp(self):
         user_model = get_user_model()

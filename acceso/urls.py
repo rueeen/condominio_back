@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .ocr import DetectarPatenteView, LeerPatenteView
 from .views import (
     EstacionamientoViewSet,
+    GuardiaViewSet,
     IngresoLogViewSet,
     MisEstacionamientosView,
     PropietarioViewSet,
@@ -20,6 +21,7 @@ router.register("ingresos", IngresoLogViewSet, basename="ingreso")
 router.register("propietarios", PropietarioViewSet, basename="propietario")
 router.register("estacionamientos", EstacionamientoViewSet,
                 basename="estacionamiento")
+router.register("guardias", GuardiaViewSet, basename="guardia")
 
 urlpatterns = [
     path("", include(router.urls)),
