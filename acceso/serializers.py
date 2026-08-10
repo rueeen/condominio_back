@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -9,6 +10,7 @@ from .models import (
     Vehiculo,
     Visitante,
     enmascarar_rut,
+    normalizar_documento,
 )
 
 
@@ -36,7 +38,9 @@ class VisitanteSerializer(serializers.ModelSerializer):
         model = Visitante
         fields = [
             "id",
-            "rut",
+            "tipo_documento",
+            "numero_documento",
+            "pais_documento",
             "nombre",
             "propietario",
             "fecha_inicio",
@@ -45,6 +49,62 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "vigente",
         ]
         read_only_fields = ["propietario", "creado_en", "vigente"]
+        extra_kwargs = {
+            "fecha_inicio": {"required": False},
+            "fecha_fin": {"required": False},
+        }
+
+    def validate(self, attrs):
+        tipo_documento = attrs.get(
+            "tipo_documento", self.instance.tipo_documento if self.instance else None
+        )
+        numero_documento = attrs.get(
+            "numero_documento", self.instance.numero_documento if self.instance else None
+        )
+        try:
+            attrs["numero_documento"] = normalizar_documento(
+                tipo_documento, numero_documento
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(
+                {"numero_documento": error.messages}
+            ) from error
+
+        propietario = (
+            self.instance.propietario
+            if self.instance
+            else self.context["request"].user
+        )
+        duplicados = Visitante.objects.filter(
+            tipo_documento=tipo_documento,
+            numero_documento=attrs["numero_documento"],
+            propietario=propietario,
+        )
+        if self.instance:
+            duplicados = duplicados.exclude(pk=self.instance.pk)
+        if duplicados.exists():
+            raise serializers.ValidationError(
+                {"numero_documento": "Ya existe una autorización para este documento."}
+            )
+
+        fecha_inicio = attrs.get(
+            "fecha_inicio",
+            self.instance.fecha_inicio if self.instance else None,
+        )
+        fecha_fin = attrs.get(
+            "fecha_fin",
+            self.instance.fecha_fin if self.instance else None,
+        )
+        try:
+            fecha_inicio, fecha_fin = Visitante.validar_vigencia(
+                fecha_inicio, fecha_fin
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+        attrs["fecha_inicio"] = fecha_inicio
+        attrs["fecha_fin"] = fecha_fin
+        return attrs
 
     def create(self, validated_data):
         validated_data["propietario"] = self.context["request"].user
@@ -117,6 +177,35 @@ class VehiculoSerializer(serializers.ModelSerializer):
 class VehiculoResolverSerializer(serializers.Serializer):
     aprobar = serializers.BooleanField(required=True)
     motivo_rechazo = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if not attrs["aprobar"] and not attrs.get("motivo_rechazo", "").strip():
+            raise serializers.ValidationError({
+                "motivo_rechazo": "Debes indicar el motivo del rechazo."
+            })
+        return attrs
+
+
+class DocumentoVerificacionSerializer(serializers.Serializer):
+    tipo_documento = serializers.ChoiceField(choices=Visitante.TipoDocumento.choices)
+    numero_documento = serializers.CharField(allow_blank=False, trim_whitespace=False)
+    pais_documento = serializers.CharField(
+        required=False, allow_blank=True, trim_whitespace=False, max_length=100
+    )
+
+    def validate(self, attrs):
+        try:
+            attrs["numero_documento"] = normalizar_documento(
+                attrs["tipo_documento"], attrs["numero_documento"]
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(
+                {"numero_documento": error.messages}
+            ) from error
+        attrs["pais_documento"] = " ".join(
+            attrs.get("pais_documento", "").strip().split()
+        )
+        return attrs
 
 
 class IngresoLogSerializer(serializers.ModelSerializer):

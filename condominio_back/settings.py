@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 
+import dj_database_url
 from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -80,10 +81,10 @@ WSGI_APPLICATION = 'condominio_back.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    "default": dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=600,
+    )
 }
 
 
@@ -139,8 +140,16 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '10/min',
+        'ocr_detection': config('OCR_DETECTION_THROTTLE_RATE', default='30/min'),
+        'ocr_recognition': config('OCR_RECOGNITION_THROTTLE_RATE', default='10/min'),
     },
 }
+
+# Límites para imágenes externas procesadas por OpenCV/Tesseract.
+OCR_MAX_UPLOAD_BYTES = config('OCR_MAX_UPLOAD_BYTES', default=5 * 1024 * 1024, cast=int)
+OCR_MAX_IMAGE_WIDTH = config('OCR_MAX_IMAGE_WIDTH', default=4096, cast=int)
+OCR_MAX_IMAGE_HEIGHT = config('OCR_MAX_IMAGE_HEIGHT', default=4096, cast=int)
+OCR_MAX_IMAGE_PIXELS = config('OCR_MAX_IMAGE_PIXELS', default=12_000_000, cast=int)
 
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
@@ -149,3 +158,25 @@ CORS_ALLOWED_ORIGINS = config(
 )
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "acceso": {
+            "handlers": ["console"],
+            "level": config("LOG_LEVEL", default="INFO"),
+            "propagate": False,
+        },
+        "django": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}

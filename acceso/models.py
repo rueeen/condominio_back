@@ -58,14 +58,49 @@ class Usuario(AbstractUser):
 # ---------------------------------------------------------------------------
 # Validadores de formato chileno
 # ---------------------------------------------------------------------------
-RUT_REGEX = re.compile(r"^\d{7,8}-[\dkK]$")
+RUT_REGEX = re.compile(r"^\d{7,8}-[\dK]$")
+DOCUMENTO_EXTRANJERO_REGEX = re.compile(r"^[\w./ -]+$", re.UNICODE)
 # Formato nuevo (2007+): 4 letras + 2 números | Formato antiguo: 2 letras + 4 números
 PATENTE_REGEX = re.compile(r"^([A-Z]{4}\d{2}|[A-Z]{2}\d{4})$")
 
 
-def validar_rut(value):
-    if not RUT_REGEX.match(value):
+def normalizar_rut(value):
+    """Normaliza y valida un RUT chileno mediante el algoritmo módulo 11."""
+    rut = re.sub(r"[.\s]", "", str(value or "")).upper()
+    if not RUT_REGEX.fullmatch(rut):
         raise ValidationError("RUT inválido. Formato esperado: 12345678-9")
+
+    cuerpo, dv_ingresado = rut.split("-")
+    suma = sum(int(digito) * factor for digito, factor in zip(
+        reversed(cuerpo), (2, 3, 4, 5, 6, 7) * 2
+    ))
+    resultado = 11 - suma % 11
+    dv_esperado = "0" if resultado == 11 else "K" if resultado == 10 else str(resultado)
+    if dv_ingresado != dv_esperado:
+        raise ValidationError("RUT inválido: dígito verificador incorrecto.")
+    return rut
+
+
+def validar_rut(value):
+    normalizar_rut(value)
+
+
+def normalizar_documento(tipo_documento, numero_documento):
+    """Normaliza un documento sin imponer formatos nacionales inexistentes."""
+    tipo = str(tipo_documento or "").strip().lower()
+    if tipo == Visitante.TipoDocumento.RUT:
+        return normalizar_rut(numero_documento)
+
+    numero = " ".join(str(numero_documento or "").strip().split()).upper()
+    if not numero:
+        raise ValidationError("El número de documento es obligatorio.")
+    if not 3 <= len(numero) <= 40:
+        raise ValidationError("El documento debe tener entre 3 y 40 caracteres.")
+    if not DOCUMENTO_EXTRANJERO_REGEX.fullmatch(numero):
+        raise ValidationError(
+            "El documento solo puede contener letras, números, espacios, puntos, guiones o '/'."
+        )
+    return numero
 
 
 def validar_patente(value):
@@ -82,7 +117,7 @@ def enmascarar_rut(rut: str) -> str:
     aparece en el log de ingresos suele ser una visita, no un usuario del
     sistema — no hay razón operativa para mostrarlo completo por defecto.
     """
-    if not rut or "-" not in rut:
+    if not rut or not RUT_REGEX.fullmatch(rut):
         return rut
     cuerpo, dv = rut.split("-", 1)
     if len(cuerpo) <= 4:
@@ -91,23 +126,55 @@ def enmascarar_rut(rut: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Visitantes (acceso temporal por RUT)
+# Visitantes (acceso temporal por documento de identidad)
 # ---------------------------------------------------------------------------
 class Visitante(models.Model):
-    rut = models.CharField(max_length=10, validators=[validar_rut])
+    class TipoDocumento(models.TextChoices):
+        RUT = "rut", "RUT"
+        PASAPORTE = "pasaporte", "Pasaporte"
+        DNI = "dni", "DNI"
+        OTRO = "otro", "Otro"
+
+    tipo_documento = models.CharField(max_length=12, choices=TipoDocumento.choices)
+    numero_documento = models.CharField(max_length=40)
+    pais_documento = models.CharField(max_length=100, blank=True)
     nombre = models.CharField(max_length=150)
     propietario = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
         related_name="visitantes", limit_choices_to={"rol": "propietario"}
     )
     fecha_inicio = models.DateTimeField(default=timezone.now)
-    fecha_fin = models.DateTimeField()
+    fecha_fin = models.DateTimeField(blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 
+    @classmethod
+    def validar_vigencia(cls, fecha_inicio=None, fecha_fin=None):
+        """Completa y valida el rango de vigencia de una visita."""
+        fecha_inicio = fecha_inicio or timezone.now()
+        fecha_fin = fecha_fin or fecha_inicio + timedelta(hours=4)
+
+        errores = {}
+        if not timezone.is_aware(fecha_inicio):
+            errores["fecha_inicio"] = "La fecha de inicio debe incluir zona horaria."
+        if not timezone.is_aware(fecha_fin):
+            errores["fecha_fin"] = "La fecha de fin debe incluir zona horaria."
+        if not errores and fecha_fin <= fecha_inicio:
+            errores["fecha_fin"] = (
+                "La fecha de fin debe ser estrictamente posterior a la fecha de inicio."
+            )
+        if errores:
+            raise ValidationError(errores)
+
+        return fecha_inicio, fecha_fin
+
     def save(self, *args, **kwargs):
-        # Si no se especifica, la vigencia por defecto es 4 horas
-        if not self.fecha_fin:
-            self.fecha_fin = self.fecha_inicio + timedelta(hours=4)
+        self.numero_documento = normalizar_documento(
+            self.tipo_documento, self.numero_documento
+        )
+        self.pais_documento = " ".join((self.pais_documento or "").strip().split())
+        self.fecha_inicio, self.fecha_fin = self.validar_vigencia(
+            self.fecha_inicio, self.fecha_fin
+        )
         super().save(*args, **kwargs)
 
     @property
@@ -115,7 +182,7 @@ class Visitante(models.Model):
         return self.fecha_inicio <= timezone.now() <= self.fecha_fin
 
     def __str__(self):
-        return f"{self.nombre} ({self.rut}) - {self.propietario.unidad}"
+        return f"{self.nombre} ({self.tipo_documento}: {self.numero_documento}) - {self.propietario.unidad}"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +273,7 @@ class IngresoLog(models.Model):
 
     tipo = models.CharField(max_length=10, choices=Tipo.choices)
     valor_ingresado = models.CharField(
-        max_length=20, help_text="RUT o patente tal como se ingresó/leyó"
+        max_length=40, help_text="Documento normalizado o patente tal como se ingresó/leyó"
     )
     resultado = models.CharField(max_length=10, choices=Resultado.choices)
     detalle = models.CharField(max_length=255, blank=True)
