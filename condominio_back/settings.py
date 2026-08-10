@@ -139,8 +139,16 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '10/min',
+        'ocr_detection': config('OCR_DETECTION_THROTTLE_RATE', default='30/min'),
+        'ocr_recognition': config('OCR_RECOGNITION_THROTTLE_RATE', default='10/min'),
     },
 }
+
+# Límites para imágenes externas procesadas por OpenCV/Tesseract.
+OCR_MAX_UPLOAD_BYTES = config('OCR_MAX_UPLOAD_BYTES', default=5 * 1024 * 1024, cast=int)
+OCR_MAX_IMAGE_WIDTH = config('OCR_MAX_IMAGE_WIDTH', default=4096, cast=int)
+OCR_MAX_IMAGE_HEIGHT = config('OCR_MAX_IMAGE_HEIGHT', default=4096, cast=int)
+OCR_MAX_IMAGE_PIXELS = config('OCR_MAX_IMAGE_PIXELS', default=12_000_000, cast=int)
 
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',

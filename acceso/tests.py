@@ -6,9 +6,11 @@ import numpy as np
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
@@ -363,6 +365,153 @@ class OCRPatenteTests(TestCase):
     @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
     def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
         self.assertIsNone(ocr.extraer_patente(self._imagen_bytes()))
+
+
+class VerificacionDocumentoGuardiaTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        usuarios = get_user_model()
+        self.guardia = usuarios.objects.create_user(username="guardia-verifica", rol="guardia")
+        self.propietarios = [
+            usuarios.objects.create_user(
+                username=f"prop-verifica-{i}", rol="propietario", torre=1, departamento=101 + i
+            )
+            for i in range(3)
+        ]
+        self.client = APIClient()
+        self.client.force_authenticate(self.guardia)
+        self.url = "/api/guardia/verificar-rut/"
+
+    def autorizar(self, propietario, tipo="rut", numero="12345678-5", **datos):
+        ahora = timezone.now()
+        return Visitante.objects.create(
+            propietario=propietario,
+            tipo_documento=tipo,
+            numero_documento=numero,
+            pais_documento=datos.get("pais_documento", ""),
+            nombre=datos.get("nombre", "Visita autorizada"),
+            fecha_inicio=datos.get("fecha_inicio", ahora - timedelta(minutes=5)),
+            fecha_fin=datos.get("fecha_fin", ahora + timedelta(hours=1)),
+        )
+
+    def verificar(self, tipo="rut", numero="12.345.678-5", **datos):
+        return self.client.post(self.url, {
+            "tipo_documento": tipo, "numero_documento": numero, **datos
+        }, format="json")
+
+    def test_rut_sin_autorizacion(self):
+        response = self.verificar()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["permitido"])
+
+    def test_rut_con_una_autorizacion_devuelve_id_exacto(self):
+        visita = self.autorizar(self.propietarios[0])
+        response = self.verificar()
+        self.assertEqual(response.data["id_autorizacion"], visita.pk)
+        self.assertTrue(response.data["permitido"])
+        self.assertEqual(set(response.data), {"permitido", "id_autorizacion", "nombre", "unidad", "fecha_fin"})
+
+    def test_rut_con_varias_autorizaciones(self):
+        visitas = [self.autorizar(propietario) for propietario in self.propietarios[:2]]
+        response = self.verificar()
+        self.assertTrue(response.data["requiere_seleccion"])
+        self.assertEqual(
+            {item["id_autorizacion"] for item in response.data["autorizaciones"]},
+            {visita.pk for visita in visitas},
+        )
+        self.assertTrue(all(set(item) == {"id_autorizacion", "nombre", "unidad", "vigencia"}
+                            for item in response.data["autorizaciones"]))
+
+    def test_pasaporte_con_autorizacion(self):
+        visita = self.autorizar(self.propietarios[0], "pasaporte", "PA 123456", pais_documento="Argentina")
+        response = self.verificar("pasaporte", " pa   123456 ", pais_documento=" argentina ")
+        self.assertEqual(response.data["id_autorizacion"], visita.pk)
+
+    def test_dni_con_autorizacion(self):
+        visita = self.autorizar(self.propietarios[0], "dni", "AR-123.456", pais_documento="Argentina")
+        response = self.verificar("dni", " ar-123.456 ", pais_documento="Argentina")
+        self.assertEqual(response.data["id_autorizacion"], visita.pk)
+
+    def test_documento_extranjero_con_varias_autorizaciones(self):
+        for propietario in self.propietarios[:2]:
+            self.autorizar(propietario, "pasaporte", "XY999", pais_documento="Perú")
+        response = self.verificar("pasaporte", "xy999", pais_documento="perú")
+        self.assertEqual(len(response.data["autorizaciones"]), 2)
+
+    def test_autorizacion_expirada_no_es_vigente(self):
+        ahora = timezone.now()
+        self.autorizar(self.propietarios[0], fecha_inicio=ahora - timedelta(hours=2),
+                       fecha_fin=ahora - timedelta(hours=1))
+        self.assertFalse(self.verificar().data["permitido"])
+
+    def test_autorizacion_futura_no_es_vigente(self):
+        ahora = timezone.now()
+        self.autorizar(self.propietarios[0], fecha_inicio=ahora + timedelta(hours=1),
+                       fecha_fin=ahora + timedelta(hours=2))
+        self.assertFalse(self.verificar().data["permitido"])
+
+
+@override_settings(
+    OCR_MAX_UPLOAD_BYTES=100_000,
+    OCR_MAX_IMAGE_WIDTH=500,
+    OCR_MAX_IMAGE_HEIGHT=500,
+    OCR_MAX_IMAGE_PIXELS=100_000,
+)
+class OCRSeguridadEndpointTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.guardia = get_user_model().objects.create_user(username="guardia-ocr", rol="guardia")
+        self.client = APIClient()
+        self.client.force_authenticate(self.guardia)
+        self.url = "/api/ocr/leer-patente/"
+
+    @staticmethod
+    def imagen(ancho=240, alto=120):
+        matriz = np.full((alto, ancho, 3), 255, dtype=np.uint8)
+        ok, contenido = cv2.imencode(".jpg", matriz)
+        assert ok
+        return contenido.tobytes()
+
+    def subir(self, contenido, content_type="image/jpeg", nombre="foto.jpg", url=None):
+        archivo = SimpleUploadedFile(nombre, contenido, content_type=content_type)
+        return self.client.post(url or self.url, {"foto": archivo}, format="multipart")
+
+    def test_rechaza_archivo_vacio(self):
+        self.assertEqual(self.subir(b"").status_code, 400)
+
+    def test_rechaza_texto_declarado_como_imagen(self):
+        self.assertEqual(self.subir(b"esto no es una imagen").status_code, 400)
+
+    def test_rechaza_archivo_corrupto(self):
+        self.assertEqual(self.subir(b"\xff\xd8\xffcontenido-corrupto").status_code, 400)
+
+    def test_rechaza_imagen_demasiado_grande(self):
+        self.assertEqual(self.subir(self.imagen(501, 100)).status_code, 400)
+
+    @patch("acceso.ocr.extraer_patente", return_value="ABCD12")
+    def test_acepta_imagen_valida(self, extraer):
+        response = self.subir(self.imagen())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"ok": True, "patente": "ABCD12"})
+
+    @patch("acceso.ocr.extraer_patente", return_value=None)
+    def test_ocr_sin_coincidencias_mantiene_fallback_manual(self, extraer):
+        response = self.subir(self.imagen())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["ok"])
+
+    @patch("acceso.ocr.extraer_patente", return_value=None)
+    def test_throttling_especifico_de_ocr(self, extraer):
+        for _ in range(10):
+            self.assertEqual(self.subir(self.imagen()).status_code, 200)
+        self.assertEqual(self.subir(self.imagen()).status_code, 429)
+
+    @patch("acceso.ocr.detectar_patente_en_imagen", return_value=None)
+    def test_throttling_especifico_de_deteccion(self, detectar):
+        url = "/api/ocr/detectar-patente/"
+        for _ in range(30):
+            self.assertEqual(self.subir(self.imagen(), url=url).status_code, 200)
+        self.assertEqual(self.subir(self.imagen(), url=url).status_code, 429)
 
 
 class VehiculoEstacionamientoInvariantTests(TestCase):

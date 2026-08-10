@@ -131,30 +131,53 @@ class VerificarRutView(APIView):
         serializer.is_valid(raise_exception=True)
         tipo_documento = serializer.validated_data["tipo_documento"]
         numero_documento = serializer.validated_data["numero_documento"]
+        pais_documento = serializer.validated_data["pais_documento"]
 
         ahora = timezone.now()
-        visita = Visitante.objects.filter(
+        visitas = Visitante.objects.select_related("propietario").filter(
             tipo_documento=tipo_documento,
             numero_documento=numero_documento,
             fecha_inicio__lte=ahora,
             fecha_fin__gte=ahora,
-        ).first()
+        )
+        if pais_documento:
+            visitas = visitas.filter(pais_documento__iexact=pais_documento)
+        visitas = list(visitas.order_by("fecha_fin", "pk"))
 
-        resultado = IngresoLog.Resultado.PERMITIDO if visita else IngresoLog.Resultado.DENEGADO
+        resultado = IngresoLog.Resultado.PERMITIDO if visitas else IngresoLog.Resultado.DENEGADO
         IngresoLog.objects.create(
             tipo=IngresoLog.Tipo.VISITA,
             valor_ingresado=numero_documento,
             resultado=resultado,
             guardia=request.user,
-            detalle=f"Visita a unidad {visita.propietario.unidad}" if visita else "Sin autorización vigente",
+            detalle=(
+                f"{len(visitas)} autorización(es) vigente(s)"
+                if visitas else "Sin autorización vigente"
+            ),
         )
 
-        if visita:
+        if len(visitas) == 1:
+            visita = visitas[0]
             return Response({
                 "permitido": True,
+                "id_autorizacion": visita.pk,
                 "nombre": visita.nombre,
                 "unidad": visita.propietario.unidad,
-                "vigente_hasta": visita.fecha_fin,
+                "fecha_fin": visita.fecha_fin,
+            })
+        if visitas:
+            return Response({
+                "permitido": True,
+                "requiere_seleccion": True,
+                "autorizaciones": [
+                    {
+                        "id_autorizacion": visita.pk,
+                        "nombre": visita.nombre,
+                        "unidad": visita.propietario.unidad,
+                        "vigencia": visita.fecha_fin,
+                    }
+                    for visita in visitas
+                ],
             })
         return Response({"permitido": False, "detalle": "No hay autorización vigente para este documento"},
                         status=status.HTTP_200_OK)

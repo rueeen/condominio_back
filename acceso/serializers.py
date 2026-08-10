@@ -189,6 +189,9 @@ class VehiculoResolverSerializer(serializers.Serializer):
 class DocumentoVerificacionSerializer(serializers.Serializer):
     tipo_documento = serializers.ChoiceField(choices=Visitante.TipoDocumento.choices)
     numero_documento = serializers.CharField(allow_blank=False, trim_whitespace=False)
+    pais_documento = serializers.CharField(
+        required=False, allow_blank=True, trim_whitespace=False, max_length=100
+    )
 
     def validate(self, attrs):
         try:
@@ -199,6 +202,9 @@ class DocumentoVerificacionSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"numero_documento": error.messages}
             ) from error
+        attrs["pais_documento"] = " ".join(
+            attrs.get("pais_documento", "").strip().split()
+        )
         return attrs
 
 
