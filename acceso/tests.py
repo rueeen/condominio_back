@@ -665,7 +665,7 @@ class OCRPatenteTests(TestCase):
     @patch("acceso.ocr.detectar_regiones_patente")
     def test_extraer_patente_lee_primer_recorte_valido(self, detectar, tesseract):
         detectar.return_value = [(10, 20, 80, 30), (0, 0, 60, 20)]
-        tesseract.side_effect = ["ruido", "ABCD12"]
+        tesseract.side_effect = ["XYZ", "ABCD12"]
 
         patente = ocr.extraer_patente(self._imagen_bytes())
 
@@ -680,7 +680,7 @@ class OCRPatenteTests(TestCase):
         self.assertEqual(patente, "ABCD12")
         tesseract.assert_called_once()
 
-    @patch("acceso.ocr.pytesseract.image_to_string", return_value="sin patente")
+    @patch("acceso.ocr.pytesseract.image_to_string", return_value="XYZ")
     @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
     def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
         self.assertIsNone(ocr.extraer_patente(self._imagen_bytes()))
@@ -861,6 +861,29 @@ class VehiculoEstacionamientoInvariantTests(TestCase):
 
     def test_propietario_sin_estacionamiento_no_puede_solicitar(self):
         self.assertEqual(self.solicitar("ABCD10").status_code, 400)
+
+    def test_admite_patentes_chilenas_y_extranjeras(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+
+        self.assertEqual(self.solicitar("AB1234").status_code, 201)
+        self.assertEqual(self.solicitar("1ABC2345").status_code, 201)
+
+    def test_normaliza_separadores_y_evitar_duplicado_activo(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+
+        response = self.solicitar("ab-1234")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["patente"], "AB1234")
+        self.assertEqual(self.solicitar("AB1234").status_code, 400)
+
+    def test_rechaza_patente_fuera_del_rango_luego_de_normalizar(self):
+        Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
+
+        response = self.solicitar("A.-1")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("entre 4 y 10 caracteres", str(response.data))
 
     def test_un_estacionamiento_admite_limite_exacto_y_no_mas(self):
         Estacionamiento.objects.create(numero="A1", propietario=self.propietario)

@@ -57,12 +57,13 @@ class Usuario(AbstractUser):
 
 
 # ---------------------------------------------------------------------------
-# Validadores de formato chileno
+# Validadores de documentos y patentes
 # ---------------------------------------------------------------------------
 RUT_REGEX = re.compile(r"^\d{7,8}-[\dK]$")
 DOCUMENTO_EXTRANJERO_REGEX = re.compile(r"^[\w./ -]+$", re.UNICODE)
-# Formato nuevo (2007+): 4 letras + 2 números | Formato antiguo: 2 letras + 4 números
-PATENTE_REGEX = re.compile(r"^([A-Z]{4}\d{2}|[A-Z]{2}\d{4})$")
+# Patente genérica: solo letras y números (sin guiones, puntos ni espacios),
+# para aceptar tanto formatos chilenos (AABB11 / AA1111) como extranjeros.
+PATENTE_REGEX = re.compile(r"^[A-Z0-9]{4,10}$")
 
 
 def normalizar_rut(value):
@@ -105,9 +106,16 @@ def normalizar_documento(tipo_documento, numero_documento):
 
 
 def validar_patente(value):
-    if not PATENTE_REGEX.match(value.upper()):
+    if not PATENTE_REGEX.fullmatch(str(value or "").upper()):
         raise ValidationError(
-            "Patente inválida. Formatos válidos: AABB11 o AA1111")
+            "Patente inválida. Usa solo letras y números, sin guiones ni espacios "
+            "(entre 4 y 10 caracteres)."
+        )
+
+
+def normalizar_patente(value):
+    """Elimina separadores y normaliza una patente a mayúsculas."""
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
 
 def enmascarar_rut(rut: str) -> str:
@@ -225,7 +233,7 @@ class Vehiculo(models.Model):
         APROBADO = "aprobado", "Aprobado"
         RECHAZADO = "rechazado", "Rechazado"
 
-    patente = models.CharField(max_length=6, validators=[validar_patente])
+    patente = models.CharField(max_length=10, validators=[validar_patente])
     propietario = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
         related_name="vehiculos", limit_choices_to={"rol": "propietario"}
@@ -256,7 +264,8 @@ class Vehiculo(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        self.patente = self.patente.upper()
+        self.patente = normalizar_patente(self.patente)
+        validar_patente(self.patente)
         super().save(*args, **kwargs)
 
     def __str__(self):
