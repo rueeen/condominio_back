@@ -11,6 +11,8 @@ from .models import (
     Visitante,
     enmascarar_rut,
     normalizar_documento,
+    normalizar_patente,
+    validar_patente,
 )
 
 
@@ -128,6 +130,9 @@ class VisitanteSerializer(serializers.ModelSerializer):
 
 
 class VehiculoSerializer(serializers.ModelSerializer):
+    # Se declara explícitamente para normalizar antes de aplicar la validación
+    # del modelo; así "AB-1234" y "AB1234" representan la misma patente.
+    patente = serializers.CharField()
     # Solo lo esencial para identificar la unidad en la tabla del admin —
     # nunca se expone el propietario completo (nombre, email, etc.) acá.
     propietario_torre = serializers.IntegerField(
@@ -156,6 +161,21 @@ class VehiculoSerializer(serializers.ModelSerializer):
             "fecha_solicitud",
             "fecha_resolucion",
         ]
+
+    def validate_patente(self, value):
+        patente = normalizar_patente(value)
+        validar_patente(patente)
+        vehiculos_activos = Vehiculo.objects.filter(
+            patente=patente,
+            estado__in=[Vehiculo.Estado.PENDIENTE, Vehiculo.Estado.APROBADO],
+        )
+        if self.instance:
+            vehiculos_activos = vehiculos_activos.exclude(pk=self.instance.pk)
+        if vehiculos_activos.exists():
+            raise serializers.ValidationError(
+                "Ya existe una solicitud activa para esta patente."
+            )
+        return patente
 
     def validate(self, attrs):
         request = self.context.get("request")

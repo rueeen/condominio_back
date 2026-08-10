@@ -151,7 +151,10 @@ def leer_patente_desde_imagen(imagen_procesada: np.ndarray) -> str | None:
         raise ImagenInvalida("El reconocimiento automático no está disponible.") from error
     candidata = re.sub(r"[^A-Z0-9]", "", texto.upper())
 
-    if PATENTE_REGEX.match(candidata):
+    # La expresión acepta deliberadamente patentes internacionales y, por ello,
+    # puede admitir más falsos positivos alfanuméricos. El guardia siempre debe
+    # confirmar o corregir el resultado antes de verificar el vehículo.
+    if PATENTE_REGEX.fullmatch(candidata):
         logger.info("Tesseract encontró una patente con formato válido")
         return candidata
 
