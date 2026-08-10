@@ -2,7 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
@@ -24,6 +24,13 @@ from .serializers import (
 
 class CondominioTokenObtainPairView(TokenObtainPairView):
     serializer_class = CondominioTokenObtainPairSerializer
+
+
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({"status": "ok"})
 
 
 # ---------------------------------------------------------------------------
