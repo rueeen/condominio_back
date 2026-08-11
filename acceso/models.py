@@ -22,6 +22,7 @@ class Usuario(AbstractUser):
         ADMIN = "admin", "Administrador"
 
     rol = models.CharField(max_length=20, choices=Rol.choices)
+    email = models.EmailField(blank=True, null=True, unique=True)
     # Se conserva como texto flexible: el frontend puede aceptar formatos
     # internacionales (prefijo +, espacios y guiones) sin imponer reglas chilenas.
     telefono = models.CharField(max_length=20, blank=True)
@@ -43,6 +44,11 @@ class Usuario(AbstractUser):
         if self.rol == self.Rol.PROPIETARIO and (self.torre is None or self.departamento is None):
             raise ValidationError(
                 "Un propietario debe tener torre y departamento asignados.")
+
+    def save(self, *args, **kwargs):
+        if not self.email:
+            self.email = None
+        super().save(*args, **kwargs)
 
     class Meta:
         constraints = [
