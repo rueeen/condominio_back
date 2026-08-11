@@ -20,6 +20,7 @@ from .serializers import (
     EstacionamientoSerializer,
     GuardiaSerializer,
     IngresoLogSerializer,
+    PerfilSerializer,
     PropietarioAltaSerializer,
     PropietarioSerializer,
     VehiculoResolverSerializer,
@@ -37,6 +38,30 @@ class HealthCheckView(APIView):
 
     def get(self, request):
         return Response({"status": "ok"})
+
+
+class PerfilView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(PerfilSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = PerfilSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class RegenerarQrPerfilView(APIView):
+    permission_classes = [IsAuthenticated, EsPropietario]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "regenerar_qr"
+
+    def post(self, request):
+        request.user.token_qr = uuid.uuid4()
+        request.user.save(update_fields=["token_qr"])
+        return Response({"token_qr": str(request.user.token_qr)})
 
 
 class GuardiaViewSet(viewsets.ModelViewSet):
@@ -236,6 +261,16 @@ class VerificarQrView(APIView):
             detalle=detalle,
         )
 
+    @staticmethod
+    def _registrar_residente(request, residente):
+        IngresoLog.objects.create(
+            tipo=IngresoLog.Tipo.RESIDENTE,
+            valor_ingresado=residente.unidad or residente.username,
+            resultado=IngresoLog.Resultado.PERMITIDO,
+            guardia=request.user,
+            detalle="Residente verificado vía QR propio",
+        )
+
     def post(self, request):
         try:
             token = uuid.UUID(str(request.data.get("token", "")))
@@ -258,6 +293,19 @@ class VerificarQrView(APIView):
             fecha_inicio__lte=ahora,
         ).filter(Q(fecha_fin__isnull=True) | Q(fecha_fin__gte=ahora)).exists()
 
+        if not visita_vigente and visita is None:
+            residente = Usuario.objects.filter(
+                token_qr=token, rol=Usuario.Rol.PROPIETARIO
+            ).first()
+            if residente:
+                self._registrar_residente(request, residente)
+                return Response({
+                    "permitido": True,
+                    "tipo": "residente",
+                    "nombre": residente.get_full_name() or residente.username,
+                    "unidad": residente.unidad,
+                })
+
         if not visita_vigente:
             self._registrar(
                 request, visita, IngresoLog.Resultado.DENEGADO,
@@ -274,6 +322,7 @@ class VerificarQrView(APIView):
         )
         return Response({
             "permitido": True,
+            "tipo": "visita",
             "id_autorizacion": visita.pk,
             "nombre": visita.nombre,
             "unidad": visita.propietario.unidad,
@@ -333,8 +382,8 @@ class IngresoLogViewSet(viewsets.ReadOnlyModelViewSet):
 # ---------------------------------------------------------------------------
 class PropietarioViewSet(viewsets.ModelViewSet):
     """
-    Solo admin. Crea, lista y edita cuentas de propietario. No expone RUT,
-    email ni datos de las visitas o vehículos del propietario.
+    Solo admin. Crea, lista y edita cuentas de propietario. No expone RUT
+    ni datos de las visitas o vehículos del propietario.
     """
     permission_classes = [IsAuthenticated, EsAdmin]
     http_method_names = ["get", "post", "patch", "head"]

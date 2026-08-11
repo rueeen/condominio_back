@@ -22,6 +22,12 @@ class Usuario(AbstractUser):
         ADMIN = "admin", "Administrador"
 
     rol = models.CharField(max_length=20, choices=Rol.choices)
+    # Se conserva como texto flexible: el frontend puede aceptar formatos
+    # internacionales (prefijo +, espacios y guiones) sin imponer reglas chilenas.
+    telefono = models.CharField(max_length=20, blank=True)
+    token_qr = models.UUIDField(
+        default=uuid.uuid4, editable=False, unique=True, db_index=True
+    )
     torre = models.PositiveSmallIntegerField(
         null=True, blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(25)],
@@ -296,6 +302,7 @@ class Vehiculo(models.Model):
 class IngresoLog(models.Model):
     class Tipo(models.TextChoices):
         VISITA = "visita", "Visita (RUT)"
+        RESIDENTE = "residente", "Residente (QR propio)"
         VEHICULO = "vehiculo", "Vehículo (patente)"
 
     class Resultado(models.TextChoices):

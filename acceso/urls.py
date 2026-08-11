@@ -7,7 +7,9 @@ from .views import (
     GuardiaViewSet,
     IngresoLogViewSet,
     MisEstacionamientosView,
+    PerfilView,
     PropietarioViewSet,
+    RegenerarQrPerfilView,
     VehiculoViewSet,
     VerificarPatenteView,
     VerificarQrView,
@@ -29,6 +31,9 @@ urlpatterns = [
 
     path("mis-estacionamientos/", MisEstacionamientosView.as_view(),
          name="mis-estacionamientos"),
+    path("perfil/", PerfilView.as_view(), name="perfil"),
+    path("perfil/regenerar-qr/", RegenerarQrPerfilView.as_view(),
+         name="regenerar-qr-perfil"),
 
     # Guardia
     path("guardia/verificar-rut/", VerificarRutView.as_view(), name="verificar-rut"),
@@ -49,6 +54,8 @@ urlpatterns = [
 # GET/POST   /estacionamientos/           (admin, CRUD completo)
 # GET/PATCH/DELETE /estacionamientos/{id}/ (admin)
 # GET        /mis-estacionamientos/       (propietario, solo lectura: sus propios números)
+# GET/PATCH  /perfil/                      (usuario autenticado, perfil propio)
+# POST       /perfil/regenerar-qr/         (propietario, revoca y renueva su QR)
 # POST       /guardia/verificar-rut/      (guardia)
 # POST       /guardia/verificar-qr/       (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
