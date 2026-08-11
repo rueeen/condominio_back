@@ -152,6 +152,21 @@ class GuardiaAdminEndpointTests(TestCase):
         self.assertTrue(response.data["results"])
         self.assertTrue(all("password" not in item for item in response.data["results"]))
 
+    def test_rechaza_email_duplicado_con_mensaje_claro(self):
+        get_user_model().objects.create_user(
+            username="correo-guardia-existente", rol="guardia",
+            email="compartido@example.com",
+        )
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            "/api/guardias/",
+            {"username": "guardia-correo-duplicado", "password": "secreto-seguro",
+             "email": "compartido@example.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["email"][0]), "Ya existe una cuenta con ese correo")
+
     def test_propietario_y_guardia_no_pueden_crear_guardias(self):
         payload = {"username": "sin-permiso", "password": "secreto-seguro"}
         for usuario in (self.propietario, self.guardia):
@@ -215,6 +230,18 @@ class PropietarioAltaEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("unidad_unica_por_propietario", str(response.data))
+
+    def test_rechaza_email_duplicado_con_mensaje_claro(self):
+        self.propietario.email = "compartido@example.com"
+        self.propietario.save(update_fields=["email"])
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            "/api/propietarios/",
+            {**self.payload, "email": "compartido@example.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["email"][0]), "Ya existe una cuenta con ese correo")
 
     def test_requiere_torre_y_departamento(self):
         self.client.force_authenticate(self.admin)
@@ -533,6 +560,10 @@ class DocumentoVisitanteTests(TestCase):
 class MigracionDocumentoVisitanteTests(TransactionTestCase):
     reset_sequences = True
 
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([("acceso", "0012_usuario_email_unico")])
+        super().tearDown()
+
     def test_migracion_conserva_rut_y_registro_existente(self):
         executor = MigrationExecutor(connection)
         executor.migrate([("acceso", "0005_alter_visitante_fecha_fin")])
@@ -566,6 +597,10 @@ class MigracionDocumentoVisitanteTests(TransactionTestCase):
 
 class MigracionTokenQrTests(TransactionTestCase):
     reset_sequences = True
+
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([("acceso", "0012_usuario_email_unico")])
+        super().tearDown()
 
     def test_asigna_tokens_unicos_a_visitas_existentes(self):
         executor = MigrationExecutor(connection)
@@ -604,6 +639,10 @@ class MigracionTokenQrTests(TransactionTestCase):
 class MigracionTokenQrUsuarioTests(TransactionTestCase):
     reset_sequences = True
 
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([("acceso", "0012_usuario_email_unico")])
+        super().tearDown()
+
     def test_asigna_tokens_unicos_a_usuarios_existentes(self):
         executor = MigrationExecutor(connection)
         executor.migrate([("acceso", "0010_alter_visitante_numero_documento")])
@@ -631,6 +670,35 @@ class MigracionTokenQrUsuarioTests(TransactionTestCase):
         self.assertEqual(len(tokens), 2)
         self.assertEqual(len(set(tokens)), 2)
         self.assertNotIn(None, tokens)
+
+
+class MigracionEmailUsuarioTests(TransactionTestCase):
+    reset_sequences = True
+
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([("acceso", "0012_usuario_email_unico")])
+        super().tearDown()
+
+    def test_convierte_emails_vacios_antes_de_aplicar_unicidad(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0011_usuario_perfil_qr_ingresolog_residente")])
+        apps_anteriores = executor.loader.project_state([
+            ("acceso", "0011_usuario_perfil_qr_ingresolog_residente")
+        ]).apps
+        UsuarioAnterior = apps_anteriores.get_model("acceso", "Usuario")
+        UsuarioAnterior.objects.create(username="sin-email-1", rol="guardia", email="")
+        UsuarioAnterior.objects.create(username="sin-email-2", rol="guardia", email="")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0012_usuario_email_unico")])
+        apps_nuevas = executor.loader.project_state([
+            ("acceso", "0012_usuario_email_unico")
+        ]).apps
+        emails = list(
+            apps_nuevas.get_model("acceso", "Usuario").objects.order_by("username")
+            .values_list("email", flat=True)
+        )
+        self.assertEqual(emails, [None, None])
 
 
 class VerificacionQrGuardiaTests(TestCase):
@@ -804,6 +872,24 @@ class PerfilEndpointTests(TestCase):
         respuesta = self.client.get("/api/perfil/")
         self.assertEqual(respuesta.status_code, 200)
         self.assertNotIn("token_qr", respuesta.data)
+
+    def test_email_vacio_se_guarda_como_null_y_duplicado_se_rechaza(self):
+        otro = get_user_model().objects.create_user(
+            username="correo-existente", rol="guardia", email="usado@example.com"
+        )
+        self.client.force_authenticate(self.propietario)
+        duplicado = self.client.patch(
+            "/api/perfil/", {"email": otro.email}, format="json"
+        )
+        self.assertEqual(duplicado.status_code, 400)
+        self.assertEqual(
+            str(duplicado.data["email"][0]), "Ya existe una cuenta con ese correo"
+        )
+
+        vacio = self.client.patch("/api/perfil/", {"email": ""}, format="json")
+        self.assertEqual(vacio.status_code, 200)
+        self.propietario.refresh_from_db()
+        self.assertIsNone(self.propietario.email)
 
     def test_regenerar_invalida_token_anterior_y_restringe_rol(self):
         token_anterior = self.propietario.token_qr

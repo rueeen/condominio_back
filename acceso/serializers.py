@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
@@ -16,6 +17,26 @@ from .models import (
 )
 
 
+EMAIL_UNICO = UniqueValidator(
+    queryset=Usuario.objects.all(),
+    message="Ya existe una cuenta con ese correo",
+)
+
+
+class EmailOpcionalUnicoMixin(serializers.Serializer):
+    """Normaliza el email opcional para que los valores vacíos se guarden como NULL."""
+
+    email = serializers.EmailField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        validators=[EMAIL_UNICO],
+    )
+
+    def validate_email(self, value):
+        return value or None
+
+
 class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -26,12 +47,12 @@ class CondominioTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
 
-class GuardiaSerializer(serializers.ModelSerializer):
+class GuardiaSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
 
     class Meta:
         model = Usuario
-        fields = ["id", "username", "first_name", "last_name", "password"]
+        fields = ["id", "username", "first_name", "last_name", "email", "password"]
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -287,7 +308,7 @@ class IngresoLogSerializer(serializers.ModelSerializer):
         return obj.valor_ingresado
 
 
-class PropietarioSerializer(serializers.ModelSerializer):
+class PropietarioSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
     """
     Uso exclusivo del admin para gestionar torre/departamento y nombre.
     Nunca expone contraseña, RUT, ni datos de sus visitas o
@@ -314,9 +335,8 @@ class PropietarioSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class PerfilSerializer(serializers.ModelSerializer):
+class PerfilSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
     unidad = serializers.CharField(read_only=True)
-    email = serializers.EmailField(required=False, allow_blank=True)
 
     class Meta:
         model = Usuario
@@ -336,7 +356,7 @@ class PerfilSerializer(serializers.ModelSerializer):
         return data
 
 
-class PropietarioAltaSerializer(serializers.ModelSerializer):
+class PropietarioAltaSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
 
     class Meta:
@@ -346,6 +366,7 @@ class PropietarioAltaSerializer(serializers.ModelSerializer):
             "username",
             "first_name",
             "last_name",
+            "email",
             "password",
             "torre",
             "departamento",
