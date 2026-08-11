@@ -11,8 +11,9 @@ Flujo:
 6. Si el formato NO calza o el OCR no encuentra nada legible -> se devuelve
    ok=False para que la app del guardia muestre el campo de búsqueda manual
 
-Requiere: pip install pytesseract pillow opencv-python-headless
-Y tener tesseract-ocr instalado a nivel de sistema operativo.
+Requiere las dependencias Python declaradas en requirements.txt. Pillow se usa
+para validar el formato y las dimensiones de los archivos antes de entregarlos
+a OpenCV. Además, tesseract-ocr debe instalarse a nivel de sistema operativo.
 """
 import io
 import logging
@@ -162,27 +163,6 @@ def leer_patente_desde_imagen(imagen_procesada: np.ndarray) -> str | None:
     return None
 
 
-def detectar_patente_en_imagen(imagen_bytes: bytes) -> dict | None:
-    """
-    Detección liviana (SOLO el cascade, sin Tesseract) para que el frontend
-    pueda hacer polling frecuente mientras la cámara está activa, sin pagar
-    el costo de OCR en cada intento. Devuelve el rectángulo candidato más
-    grande y las dimensiones de la imagen recibida, o None si no encontró
-    nada.
-    """
-    imagen_gris = decodificar_imagen_gris(imagen_bytes)
-    candidatos = detectar_regiones_patente(imagen_gris)
-    if not candidatos:
-        return None
-
-    x, y, w, h = candidatos[0]
-    alto_img, ancho_img = imagen_gris.shape
-    return {
-        "x": int(x), "y": int(y), "w": int(w), "h": int(h),
-        "imagen_ancho": int(ancho_img), "imagen_alto": int(alto_img),
-    }
-
-
 def extraer_patente(imagen_bytes: bytes) -> str | None:
     """Devuelve la patente candidata (string) o None si no se detectó nada válido."""
     logger.info("Procesando una nueva imagen para OCR")
@@ -204,36 +184,6 @@ def extraer_patente(imagen_bytes: bytes) -> str | None:
     patente = leer_patente_desde_imagen(preprocesar_gris(imagen_gris))
     logger.info("Fallback OCR finalizado; coincidencia=%s", bool(patente))
     return patente
-
-
-class DetectarPatenteView(APIView):
-    """
-    Endpoint liviano para polling desde el frontend mientras la cámara está
-    activa: SOLO corre el cascade (rápido), no Tesseract. El frontend lo usa
-    para saber cuándo "engancha" una patente y disparar la captura automática,
-    sin pagar el costo de OCR en cada frame consultado.
-    """
-    permission_classes = [IsAuthenticated, EsGuardia]
-    parser_classes = [MultiPartParser]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "ocr_detection"
-
-    def post(self, request):
-        archivo = request.FILES.get("foto")
-        if not archivo:
-            return Response({"detail": "Falta el archivo 'foto'"}, status=400)
-
-        try:
-            resultado = detectar_patente_en_imagen(leer_y_validar_archivo(archivo))
-        except ImagenInvalida as error:
-            return Response({"detectada": False, "detalle": str(error)}, status=400)
-        except cv2.error:
-            logger.warning("OpenCV no pudo ejecutar la detección")
-            return Response({"detectada": False, "detalle": "La imagen no se pudo procesar."}, status=400)
-
-        if resultado:
-            return Response({"detectada": True, **resultado})
-        return Response({"detectada": False})
 
 
 class LeerPatenteView(APIView):
