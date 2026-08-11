@@ -317,7 +317,7 @@ class IngresoLogSerializer(serializers.ModelSerializer):
 class PropietarioSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
     """
     Uso exclusivo del admin para gestionar torre/departamento y nombre.
-    Nunca expone contraseña, RUT, ni datos de sus visitas o
+    Nunca expone contraseña, documentos de identidad, ni datos de sus visitas o
     vehículos. Los estacionamientos se listan (solo lectura, números)
     para que el admin vea de un vistazo cuántos le corresponden; se
     administran aparte vía /api/estacionamientos/.

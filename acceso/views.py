@@ -1,5 +1,6 @@
 import uuid
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -12,7 +13,16 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import MAX_PATENTES_POR_ESTACIONAMIENTO, Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
+from .models import (
+    MAX_PATENTES_POR_ESTACIONAMIENTO,
+    Estacionamiento,
+    IngresoLog,
+    Usuario,
+    Vehiculo,
+    Visitante,
+    normalizar_patente,
+    validar_patente,
+)
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
     CondominioTokenObtainPairSerializer,
@@ -182,7 +192,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 # Guardia: verificación de documentos (visitas)
 # ---------------------------------------------------------------------------
-class VerificarRutView(APIView):
+class VerificarDocumentoView(APIView):
     permission_classes = [IsAuthenticated, EsGuardia]
 
     def post(self, request):
@@ -342,9 +352,13 @@ class VerificarPatenteView(APIView):
     permission_classes = [IsAuthenticated, EsGuardia]
 
     def post(self, request):
-        patente = request.data.get("patente", "").strip().upper()
+        patente = normalizar_patente(request.data.get("patente", ""))
         if not patente:
             return Response({"detail": "Falta la patente"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validar_patente(patente)
+        except DjangoValidationError as error:
+            raise ValidationError({"patente": error.messages}) from error
 
         vehiculo = Vehiculo.objects.filter(
             patente=patente, estado=Vehiculo.Estado.APROBADO

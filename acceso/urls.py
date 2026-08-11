@@ -11,9 +11,9 @@ from .views import (
     PropietarioViewSet,
     RegenerarQrPerfilView,
     VehiculoViewSet,
+    VerificarDocumentoView,
     VerificarPatenteView,
     VerificarQrView,
-    VerificarRutView,
     VisitanteViewSet,
 )
 
@@ -36,7 +36,10 @@ urlpatterns = [
          name="regenerar-qr-perfil"),
 
     # Guardia
-    path("guardia/verificar-rut/", VerificarRutView.as_view(), name="verificar-rut"),
+    path("guardia/verificar-documento/", VerificarDocumentoView.as_view(),
+         name="verificar-documento"),
+    # Alias temporal para clientes que todavía usan el nombre histórico.
+    path("guardia/verificar-rut/", VerificarDocumentoView.as_view(), name="verificar-rut"),
     path("guardia/verificar-qr/", VerificarQrView.as_view(), name="verificar-qr"),
     path("guardia/verificar-patente/",
          VerificarPatenteView.as_view(), name="verificar-patente"),
@@ -48,7 +51,7 @@ urlpatterns = [
 # GET/PATCH  /visitantes/{id}/            (propietario)
 # GET/POST   /vehiculos/                  (propietario crea, admin lista todo)
 # POST       /vehiculos/{id}/resolver/    (admin aprueba/rechaza)
-# GET        /ingresos/                   (admin, historial/auditoría — RUT enmascarado)
+# GET        /ingresos/                   (admin, historial/auditoría — documentos protegidos)
 # GET/POST   /propietarios/               (admin, lista y crea propietarios)
 # PATCH      /propietarios/{id}/          (admin, edita torre/departamento)
 # GET/POST   /estacionamientos/           (admin, CRUD completo)
@@ -56,7 +59,8 @@ urlpatterns = [
 # GET        /mis-estacionamientos/       (propietario, solo lectura: sus propios números)
 # GET/PATCH  /perfil/                      (usuario autenticado, perfil propio)
 # POST       /perfil/regenerar-qr/         (propietario, revoca y renueva su QR)
-# POST       /guardia/verificar-rut/      (guardia)
+# POST       /guardia/verificar-documento/ (guardia)
+# POST       /guardia/verificar-rut/       (guardia, alias compatible temporal)
 # POST       /guardia/verificar-qr/       (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
 # POST       /ocr/leer-patente/           (guardia, sube foto -> lee y devuelve la patente)

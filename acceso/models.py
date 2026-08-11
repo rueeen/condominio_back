@@ -309,7 +309,7 @@ class Vehiculo(models.Model):
 # ---------------------------------------------------------------------------
 class IngresoLog(models.Model):
     class Tipo(models.TextChoices):
-        VISITA = "visita", "Visita (RUT)"
+        VISITA = "visita", "Visita (documento)"
         RESIDENTE = "residente", "Residente (QR propio)"
         VEHICULO = "vehiculo", "Vehículo (patente)"
 
