@@ -601,6 +601,38 @@ class MigracionTokenQrTests(TransactionTestCase):
         self.assertNotIn(None, tokens)
 
 
+class MigracionTokenQrUsuarioTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_asigna_tokens_unicos_a_usuarios_existentes(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate([("acceso", "0010_alter_visitante_numero_documento")])
+        apps_anteriores = executor.loader.project_state(
+            [("acceso", "0010_alter_visitante_numero_documento")]
+        ).apps
+        UsuarioAnterior = apps_anteriores.get_model("acceso", "Usuario")
+        for numero in range(2):
+            UsuarioAnterior.objects.create(
+                username=f"usuario-qr-migracion-{numero}", rol="guardia"
+            )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([
+            ("acceso", "0011_usuario_perfil_qr_ingresolog_residente")
+        ])
+        apps_nuevas = executor.loader.project_state([
+            ("acceso", "0011_usuario_perfil_qr_ingresolog_residente")
+        ]).apps
+        tokens = list(
+            apps_nuevas.get_model("acceso", "Usuario").objects.values_list(
+                "token_qr", flat=True
+            )
+        )
+        self.assertEqual(len(tokens), 2)
+        self.assertEqual(len(set(tokens)), 2)
+        self.assertNotIn(None, tokens)
+
+
 class VerificacionQrGuardiaTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -643,6 +675,7 @@ class VerificacionQrGuardiaTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {
             "permitido": True,
+            "tipo": "visita",
             "id_autorizacion": self.visita.pk,
             "nombre": "Visita QR",
             "unidad": "Torre 5, Depto 501",
@@ -693,10 +726,110 @@ class VerificacionQrGuardiaTests(TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertFalse(response.data["permitido"])
 
+    def test_token_residente_permite_y_loguea_unidad_no_token(self):
+        self.propietario.first_name = "Residente"
+        self.propietario.last_name = "Autorizado"
+        self.propietario.save()
+        self.client.force_authenticate(self.guardia)
+
+        response = self.client.post(
+            self.url, {"token": str(self.propietario.token_qr)}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "permitido": True,
+            "tipo": "residente",
+            "nombre": "Residente Autorizado",
+            "unidad": "Torre 5, Depto 501",
+        })
+        ingreso = IngresoLog.objects.get()
+        self.assertEqual(ingreso.tipo, IngresoLog.Tipo.RESIDENTE)
+        self.assertEqual(ingreso.valor_ingresado, "Torre 5, Depto 501")
+        self.assertNotIn(str(self.propietario.token_qr), ingreso.detalle)
+
     def test_endpoint_exige_rol_guardia(self):
         self.client.force_authenticate(self.propietario)
         response = self.client.post(self.url, {"token": str(self.visita.token_qr)}, format="json")
         self.assertEqual(response.status_code, 403)
+
+
+class PerfilEndpointTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        usuarios = get_user_model()
+        self.propietario = usuarios.objects.create_user(
+            username="prop-perfil", rol="propietario", torre=8, departamento=804
+        )
+        self.guardia = usuarios.objects.create_user(
+            username="guardia-perfil", rol="guardia"
+        )
+        self.client = APIClient()
+
+    def test_propietario_consulta_y_edita_solo_contacto(self):
+        self.client.force_authenticate(self.propietario)
+        consulta = self.client.get("/api/perfil/")
+
+        self.assertEqual(consulta.status_code, 200)
+        self.assertEqual(consulta.data["token_qr"], str(self.propietario.token_qr))
+        self.assertEqual(consulta.data["unidad"], "Torre 8, Depto 804")
+
+        respuesta = self.client.patch(
+            "/api/perfil/",
+            {
+                "email": "residente@example.com",
+                "telefono": "+56 9-1234-5678",
+                "torre": 2,
+                "departamento": 201,
+                "rol": "admin",
+            },
+            format="json",
+        )
+        self.assertEqual(respuesta.status_code, 200)
+        self.propietario.refresh_from_db()
+        self.assertEqual(self.propietario.email, "residente@example.com")
+        self.assertEqual(self.propietario.telefono, "+56 9-1234-5678")
+        self.assertEqual((self.propietario.torre, self.propietario.departamento), (8, 804))
+        self.assertEqual(self.propietario.rol, "propietario")
+
+    def test_rechaza_email_invalido_y_oculta_qr_a_guardia(self):
+        self.client.force_authenticate(self.propietario)
+        respuesta = self.client.patch(
+            "/api/perfil/", {"email": "no-es-email"}, format="json"
+        )
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertIn("email", respuesta.data)
+
+        self.client.force_authenticate(self.guardia)
+        respuesta = self.client.get("/api/perfil/")
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertNotIn("token_qr", respuesta.data)
+
+    def test_regenerar_invalida_token_anterior_y_restringe_rol(self):
+        token_anterior = self.propietario.token_qr
+        self.client.force_authenticate(self.propietario)
+        respuesta = self.client.post("/api/perfil/regenerar-qr/", format="json")
+        self.assertEqual(respuesta.status_code, 200)
+        self.propietario.refresh_from_db()
+        self.assertNotEqual(self.propietario.token_qr, token_anterior)
+        self.assertEqual(respuesta.data["token_qr"], str(self.propietario.token_qr))
+
+        self.client.force_authenticate(self.guardia)
+        token_viejo = self.client.post(
+            "/api/guardia/verificar-qr/", {"token": str(token_anterior)}, format="json"
+        )
+        token_nuevo = self.client.post(
+            "/api/guardia/verificar-qr/",
+            {"token": str(self.propietario.token_qr)},
+            format="json",
+        )
+        self.assertFalse(token_viejo.data["permitido"])
+        self.assertTrue(token_nuevo.data["permitido"])
+        self.assertEqual(token_nuevo.data["tipo"], "residente")
+        self.assertEqual(
+            self.client.post("/api/perfil/regenerar-qr/", format="json").status_code,
+            403,
+        )
 
 class OCRPatenteTests(TestCase):
     def _imagen_bytes(self):

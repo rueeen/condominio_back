@@ -142,6 +142,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '10/min',
         'guardia_qr': config('GUARDIA_QR_THROTTLE_RATE', default='60/min'),
+        'regenerar_qr': config('REGENERAR_QR_THROTTLE_RATE', default='3/hour'),
         'ocr_recognition': config('OCR_RECOGNITION_THROTTLE_RATE', default='10/min'),
     },
 }

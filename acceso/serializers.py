@@ -290,7 +290,7 @@ class IngresoLogSerializer(serializers.ModelSerializer):
 class PropietarioSerializer(serializers.ModelSerializer):
     """
     Uso exclusivo del admin para gestionar torre/departamento y nombre.
-    Nunca expone contraseña, email, RUT, ni datos de sus visitas o
+    Nunca expone contraseña, RUT, ni datos de sus visitas o
     vehículos. Los estacionamientos se listan (solo lectura, números)
     para que el admin vea de un vistazo cuántos le corresponden; se
     administran aparte vía /api/estacionamientos/.
@@ -300,8 +300,8 @@ class PropietarioSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        fields = ["id", "username", "first_name",
-                  "last_name", "torre", "departamento", "estacionamientos"]
+        fields = ["id", "username", "first_name", "last_name", "email",
+                  "telefono", "torre", "departamento", "estacionamientos"]
         read_only_fields = ["id", "username", "estacionamientos"]
 
     def validate(self, attrs):
@@ -312,6 +312,28 @@ class PropietarioSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Un propietario debe tener torre y departamento asignados.")
         return attrs
+
+
+class PerfilSerializer(serializers.ModelSerializer):
+    unidad = serializers.CharField(read_only=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "username", "first_name", "last_name", "email", "telefono",
+            "torre", "departamento", "unidad", "token_qr",
+        ]
+        read_only_fields = [
+            "username", "first_name", "last_name", "torre", "departamento",
+            "unidad", "token_qr",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.rol != Usuario.Rol.PROPIETARIO:
+            data.pop("token_qr", None)
+        return data
 
 
 class PropietarioAltaSerializer(serializers.ModelSerializer):
