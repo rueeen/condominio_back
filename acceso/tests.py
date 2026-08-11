@@ -962,7 +962,7 @@ class VerificacionDocumentoGuardiaTests(TestCase):
         ]
         self.client = APIClient()
         self.client.force_authenticate(self.guardia)
-        self.url = "/api/guardia/verificar-rut/"
+        self.url = "/api/guardia/verificar-documento/"
 
     def autorizar(self, propietario, tipo="rut", numero="12345678-5", **datos):
         ahora = timezone.now()
@@ -1009,6 +1009,24 @@ class VerificacionDocumentoGuardiaTests(TestCase):
         response = self.verificar("pasaporte", " pa   123456 ", pais_documento=" argentina ")
         self.assertEqual(response.data["id_autorizacion"], visita.pk)
 
+    def test_alias_verificar_rut_mantiene_el_contrato_para_pasaporte(self):
+        visita = self.autorizar(
+            self.propietarios[0], "pasaporte", "PA 123456", pais_documento="Argentina"
+        )
+
+        response = self.client.post(
+            "/api/guardia/verificar-rut/",
+            {
+                "tipo_documento": "pasaporte",
+                "numero_documento": " pa   123456 ",
+                "pais_documento": " argentina ",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id_autorizacion"], visita.pk)
+
     def test_dni_con_autorizacion(self):
         visita = self.autorizar(self.propietarios[0], "dni", "AR-123.456", pais_documento="Argentina")
         response = self.verificar("dni", " ar-123.456 ", pais_documento="Argentina")
@@ -1045,6 +1063,45 @@ class VerificacionDocumentoGuardiaTests(TestCase):
 
         self.assertTrue(response.data["permitido"])
         self.assertIsNone(response.data["fecha_fin"])
+
+
+class VerificacionPatenteGuardiaTests(TestCase):
+    def setUp(self):
+        self.guardia = get_user_model().objects.create_user(
+            username="guardia-patente", rol="guardia"
+        )
+        self.propietario = get_user_model().objects.create_user(
+            username="prop-patente", rol="propietario", torre=2, departamento=201
+        )
+        Vehiculo.objects.create(
+            patente="AB1234",
+            propietario=self.propietario,
+            estado=Vehiculo.Estado.APROBADO,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.guardia)
+        self.url = "/api/guardia/verificar-patente/"
+
+    def test_normaliza_separadores_y_mayusculas_antes_de_buscar(self):
+        for patente in ("AB-1234", "AB 1234", "ab1234"):
+            with self.subTest(patente=patente):
+                response = self.client.post(
+                    self.url, {"patente": patente}, format="json"
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.data["permitido"])
+                self.assertEqual(
+                    IngresoLog.objects.latest("pk").valor_ingresado, "AB1234"
+                )
+
+    def test_rechaza_patente_invalida_despues_de_normalizar(self):
+        response = self.client.post(
+            self.url, {"patente": "A-1"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("patente", response.data)
+        self.assertFalse(IngresoLog.objects.exists())
 
 
 @override_settings(

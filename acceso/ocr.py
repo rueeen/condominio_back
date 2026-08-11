@@ -5,7 +5,7 @@ Flujo:
 1. El celular manda la foto (multipart/form-data) a /ocr/leer-patente/
 2. Se intenta detectar y recortar la región de la patente
 3. Se corre OCR sobre el recorte; si falla, sobre la imagen completa
-4. Se limpia el texto y se valida contra el formato de patente chilena
+4. Se limpia el texto y se valida contra el formato genérico de patente
 5. Si el formato calza -> se devuelve la patente candidata (el frontend luego
    llama a VerificarPatenteView para chequear contra la BD)
 6. Si el formato NO calza o el OCR no encuentra nada legible -> se devuelve
