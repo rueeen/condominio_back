@@ -883,14 +883,6 @@ class OCRSeguridadEndpointTests(TestCase):
             self.assertEqual(self.subir(self.imagen()).status_code, 200)
         self.assertEqual(self.subir(self.imagen()).status_code, 429)
 
-    @patch("acceso.ocr.detectar_patente_en_imagen", return_value=None)
-    def test_throttling_especifico_de_deteccion(self, detectar):
-        url = "/api/ocr/detectar-patente/"
-        for _ in range(30):
-            self.assertEqual(self.subir(self.imagen(), url=url).status_code, 200)
-        self.assertEqual(self.subir(self.imagen(), url=url).status_code, 429)
-
-
 class VehiculoEstacionamientoInvariantTests(TestCase):
     def setUp(self):
         user_model = get_user_model()

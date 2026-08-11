@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .ocr import DetectarPatenteView, LeerPatenteView
+from .ocr import LeerPatenteView
 from .views import (
     EstacionamientoViewSet,
     GuardiaViewSet,
@@ -36,8 +36,6 @@ urlpatterns = [
     path("guardia/verificar-patente/",
          VerificarPatenteView.as_view(), name="verificar-patente"),
     path("ocr/leer-patente/", LeerPatenteView.as_view(), name="leer-patente"),
-    path("ocr/detectar-patente/", DetectarPatenteView.as_view(),
-         name="detectar-patente"),
 ]
 
 # Rutas resultantes, resumen:
@@ -55,5 +53,3 @@ urlpatterns = [
 # POST       /guardia/verificar-qr/       (guardia)
 # POST       /guardia/verificar-patente/  (guardia)
 # POST       /ocr/leer-patente/           (guardia, sube foto -> lee y devuelve la patente)
-# POST       /ocr/detectar-patente/       (guardia, polling liviano -> solo detecta si hay
-#                                           una región candidata, sin OCR)
