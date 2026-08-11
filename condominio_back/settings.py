@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
@@ -143,6 +144,11 @@ REST_FRAMEWORK = {
         'guardia_qr': config('GUARDIA_QR_THROTTLE_RATE', default='60/min'),
         'ocr_recognition': config('OCR_RECOGNITION_THROTTLE_RATE', default='10/min'),
     },
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
 # Límites para imágenes externas procesadas por OpenCV/Tesseract.
