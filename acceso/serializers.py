@@ -49,7 +49,12 @@ class EstacionamientoSerializer(serializers.ModelSerializer):
 
 
 class VisitanteSerializer(serializers.ModelSerializer):
+    """Serializa visitas; envíe ``permanente: true`` para una visita sin vencimiento."""
+
     vigente = serializers.BooleanField(read_only=True)
+    permanente = serializers.BooleanField(
+        write_only=True, required=False, default=False
+    )
 
     class Meta:
         model = Visitante
@@ -65,6 +70,7 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "fecha_fin",
             "creado_en",
             "vigente",
+            "permanente",
         ]
         read_only_fields = ["token_qr", "propietario", "creado_en", "vigente"]
         extra_kwargs = {
@@ -113,9 +119,12 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "fecha_fin",
             self.instance.fecha_fin if self.instance else None,
         )
+        permanente = attrs.get(
+            "permanente", self.instance.fecha_fin is None if self.instance else False
+        )
         try:
             fecha_inicio, fecha_fin = Visitante.validar_vigencia(
-                fecha_inicio, fecha_fin
+                fecha_inicio, fecha_fin, permanente=permanente
             )
         except DjangoValidationError as error:
             raise serializers.ValidationError(error.message_dict) from error
@@ -125,8 +134,18 @@ class VisitanteSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        permanente = validated_data.pop("permanente", False)
         validated_data["propietario"] = self.context["request"].user
-        return super().create(validated_data)
+        visitante = Visitante(**validated_data)
+        visitante.save(permanente=permanente)
+        return visitante
+
+    def update(self, instance, validated_data):
+        permanente = validated_data.pop("permanente", instance.fecha_fin is None)
+        for atributo, valor in validated_data.items():
+            setattr(instance, atributo, valor)
+        instance.save(permanente=permanente)
+        return instance
 
 
 class VehiculoSerializer(serializers.ModelSerializer):

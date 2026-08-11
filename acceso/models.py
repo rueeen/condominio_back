@@ -9,6 +9,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+DURACION_VISITA_POR_DEFECTO = timedelta(hours=5)
+
 
 # ---------------------------------------------------------------------------
 # Usuario con rol (reemplaza al User por defecto de Django)
@@ -156,23 +158,33 @@ class Visitante(models.Model):
         related_name="visitantes", limit_choices_to={"rol": "propietario"}
     )
     fecha_inicio = models.DateTimeField(default=timezone.now)
-    fecha_fin = models.DateTimeField(blank=True)
+    fecha_fin = models.DateTimeField(null=True, blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 
     @classmethod
-    def validar_vigencia(cls, fecha_inicio=None, fecha_fin=None):
-        """Completa y valida el rango de vigencia de una visita."""
+    def validar_vigencia(cls, fecha_inicio=None, fecha_fin=None, permanente=False):
+        """Completa y valida la vigencia; las visitas permanentes no vencen."""
         fecha_inicio = fecha_inicio or timezone.now()
-        fecha_fin = fecha_fin or fecha_inicio + timedelta(hours=4)
+
+        if permanente:
+            return fecha_inicio, None
+
+        fecha_fin = fecha_fin or fecha_inicio + DURACION_VISITA_POR_DEFECTO
 
         errores = {}
         if not timezone.is_aware(fecha_inicio):
             errores["fecha_inicio"] = "La fecha de inicio debe incluir zona horaria."
         if not timezone.is_aware(fecha_fin):
             errores["fecha_fin"] = "La fecha de fin debe incluir zona horaria."
-        if not errores and fecha_fin <= fecha_inicio:
-            errores["fecha_fin"] = (
-                "La fecha de fin debe ser estrictamente posterior a la fecha de inicio."
+        if not errores and fecha_fin <= timezone.now():
+            errores["fecha_fin"] = "La fecha de vencimiento no puede estar en el pasado."
+        fechas_con_zona = timezone.is_aware(fecha_inicio) and timezone.is_aware(
+            fecha_fin
+        )
+        if fechas_con_zona and fecha_fin <= fecha_inicio:
+            errores.setdefault(
+                "fecha_fin",
+                "La fecha de fin debe ser estrictamente posterior a la fecha de inicio.",
             )
         if errores:
             raise ValidationError(errores)
@@ -180,18 +192,24 @@ class Visitante(models.Model):
         return fecha_inicio, fecha_fin
 
     def save(self, *args, **kwargs):
+        permanente = kwargs.pop(
+            "permanente", self.pk is not None and self.fecha_fin is None
+        )
         self.numero_documento = normalizar_documento(
             self.tipo_documento, self.numero_documento
         )
         self.pais_documento = " ".join((self.pais_documento or "").strip().split())
         self.fecha_inicio, self.fecha_fin = self.validar_vigencia(
-            self.fecha_inicio, self.fecha_fin
+            self.fecha_inicio, self.fecha_fin, permanente=permanente
         )
         super().save(*args, **kwargs)
 
     @property
     def vigente(self):
-        return self.fecha_inicio <= timezone.now() <= self.fecha_fin
+        ahora = timezone.now()
+        if self.fecha_fin is None:
+            return self.fecha_inicio <= ahora
+        return self.fecha_inicio <= ahora <= self.fecha_fin
 
     def __str__(self):
         return f"{self.nombre} ({self.tipo_documento}: {self.numero_documento}) - {self.propietario.unidad}"

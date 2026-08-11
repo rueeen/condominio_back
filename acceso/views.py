@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -171,8 +172,7 @@ class VerificarRutView(APIView):
             tipo_documento=tipo_documento,
             numero_documento=numero_documento,
             fecha_inicio__lte=ahora,
-            fecha_fin__gte=ahora,
-        )
+        ).filter(Q(fecha_fin__isnull=True) | Q(fecha_fin__gte=ahora))
         if pais_documento:
             visitas = visitas.filter(pais_documento__iexact=pais_documento)
         visitas = list(visitas.order_by("fecha_fin", "pk"))
@@ -256,8 +256,7 @@ class VerificarQrView(APIView):
         visita_vigente = visita and Visitante.objects.filter(
             pk=visita.pk,
             fecha_inicio__lte=ahora,
-            fecha_fin__gte=ahora,
-        ).exists()
+        ).filter(Q(fecha_fin__isnull=True) | Q(fecha_fin__gte=ahora)).exists()
 
         if not visita_vigente:
             self._registrar(
