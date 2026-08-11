@@ -63,6 +63,12 @@ class GuardiaSerializer(EmailOpcionalUnicoMixin, serializers.ModelSerializer):
 
 
 class EstacionamientoSerializer(serializers.ModelSerializer):
+    propietario = serializers.PrimaryKeyRelatedField(
+        queryset=Usuario.objects.filter(rol=Usuario.Rol.PROPIETARIO),
+        allow_null=True,
+        required=False,
+    )
+
     class Meta:
         model = Estacionamiento
         fields = ["id", "numero", "propietario"]

@@ -411,25 +411,12 @@ class EstacionamientoViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _lock_propietarios(*propietario_ids):
-        ids = sorted(set(propietario_ids))
+        # Un estacionamiento libre no tiene una fila de propietario que bloquear.
+        ids = sorted({pk for pk in propietario_ids if pk is not None})
         return {
             propietario.pk: propietario
             for propietario in Usuario.objects.select_for_update().filter(pk__in=ids)
         }
-
-    @staticmethod
-    def _validar_limite(propietario, cantidad_estacionamientos):
-        activos = Vehiculo.objects.filter(
-            propietario=propietario,
-            estado__in=[Vehiculo.Estado.PENDIENTE, Vehiculo.Estado.APROBADO],
-        ).count()
-        limite = cantidad_estacionamientos * MAX_PATENTES_POR_ESTACIONAMIENTO
-        if activos > limite:
-            raise ValidationError({
-                "detail": (
-                    f"La operación dejaría {activos} patentes activas para un límite de {limite}."
-                )
-            })
 
     def perform_update(self, serializer):
         with transaction.atomic():
@@ -437,32 +424,21 @@ class EstacionamientoViewSet(viewsets.ModelViewSet):
                 pk=serializer.instance.pk
             )
             anterior_id = estacionamiento.propietario_id
-            nuevo_id = serializer.validated_data.get(
+            nuevo = serializer.validated_data.get(
                 "propietario", estacionamiento.propietario
-            ).pk
-            propietarios = self._lock_propietarios(anterior_id, nuevo_id)
-            if anterior_id != nuevo_id:
-                cantidad_anterior = Estacionamiento.objects.filter(
-                    propietario_id=anterior_id
-                ).count() - 1
-                cantidad_nueva = Estacionamiento.objects.filter(
-                    propietario_id=nuevo_id
-                ).count() + 1
-                self._validar_limite(
-                    propietarios[anterior_id], cantidad_anterior)
-                self._validar_limite(propietarios[nuevo_id], cantidad_nueva)
+            )
+            nuevo_id = nuevo.pk if nuevo else None
+            self._lock_propietarios(anterior_id, nuevo_id)
+            # Una desvinculación no elimina ni rechaza patentes existentes. Si el
+            # propietario queda sobre el nuevo límite, VehiculoSerializer y
+            # perform_create impiden nuevas solicitudes hasta recuperar cupo.
             serializer.instance = estacionamiento
             serializer.save()
 
     def perform_destroy(self, instance):
         with transaction.atomic():
             estacionamiento = Estacionamiento.objects.select_for_update().get(pk=instance.pk)
-            propietario = self._lock_propietarios(estacionamiento.propietario_id)[
-                estacionamiento.propietario_id
-            ]
-            cantidad = Estacionamiento.objects.filter(
-                propietario=propietario).count() - 1
-            self._validar_limite(propietario, cantidad)
+            self._lock_propietarios(estacionamiento.propietario_id)
             estacionamiento.delete()
 
 

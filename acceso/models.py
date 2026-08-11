@@ -243,7 +243,8 @@ class Estacionamiento(models.Model):
     # quedar asignado por error a dos propietarios distintos.
     numero = models.CharField(max_length=10, unique=True)
     propietario = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True,
         related_name="estacionamientos", limit_choices_to={"rol": "propietario"}
     )
 
@@ -251,7 +252,8 @@ class Estacionamiento(models.Model):
         ordering = ["numero"]
 
     def __str__(self):
-        return f"Estacionamiento {self.numero} - {self.propietario.unidad}"
+        destino = self.propietario.unidad if self.propietario else "sin asignar"
+        return f"Estacionamiento {self.numero} - {destino}"
 
 
 # ---------------------------------------------------------------------------
