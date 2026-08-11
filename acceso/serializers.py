@@ -1,4 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -126,16 +128,23 @@ class VisitanteSerializer(serializers.ModelSerializer):
             if self.instance
             else self.context["request"].user
         )
+        ahora = timezone.now()
         duplicados = Visitante.objects.filter(
             tipo_documento=tipo_documento,
             numero_documento=attrs["numero_documento"],
             propietario=propietario,
-        )
+            fecha_inicio__lte=ahora,
+        ).filter(Q(fecha_fin__isnull=True) | Q(fecha_fin__gte=ahora))
         if self.instance:
             duplicados = duplicados.exclude(pk=self.instance.pk)
         if duplicados.exists():
             raise serializers.ValidationError(
-                {"numero_documento": "Ya existe una autorización para este documento."}
+                {
+                    "numero_documento": (
+                        "Esta persona ya tiene una autorización vigente de tu unidad. "
+                        "Cancélala si quieres crear una nueva."
+                    )
+                }
             )
 
         fecha_inicio = attrs.get(

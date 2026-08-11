@@ -541,6 +541,49 @@ class DocumentoVisitanteTests(TestCase):
         self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
         response = self.crear("pasaporte", " AB   123 ")
         self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            "Cancélala si quieres crear una nueva",
+            str(response.data["numero_documento"]),
+        )
+
+    def test_documento_de_visita_vencida_se_puede_autorizar_nuevamente(self):
+        self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
+        Visitante.objects.filter(propietario=self.propietario).update(
+            fecha_inicio=timezone.now() - timedelta(days=31),
+            fecha_fin=timezone.now() - timedelta(days=30),
+        )
+
+        response = self.crear("pasaporte", " AB   123 ")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            Visitante.objects.filter(propietario=self.propietario).count(), 2
+        )
+
+    def test_otro_propietario_puede_autorizar_el_mismo_documento(self):
+        self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
+        otro_propietario = get_user_model().objects.create_user(
+            username="otro-prop-doc",
+            rol="propietario",
+            torre=3,
+            departamento=303,
+        )
+        self.client.force_authenticate(otro_propietario)
+
+        response = self.client.post(
+            "/api/visitantes/",
+            {
+                "tipo_documento": "pasaporte",
+                "numero_documento": " AB   123 ",
+                "nombre": "Persona visitante",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            Visitante.objects.filter(numero_documento="AB 123").count(), 2
+        )
 
     def test_guardia_encuentra_autorizacion_extranjera_normalizada(self):
         self.assertEqual(self.crear("pasaporte", "pa123456").status_code, 201)
