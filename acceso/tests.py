@@ -323,14 +323,14 @@ class VisitanteVigenciaTests(TestCase):
             format="json",
         )
 
-    def test_visita_sin_fecha_fin_dura_cuatro_horas(self):
+    def test_visita_sin_fecha_fin_dura_cinco_horas(self):
         inicio = timezone.now() + timedelta(days=1)
 
         response = self._crear(fecha_inicio=inicio.isoformat())
 
         self.assertEqual(response.status_code, 201)
         visita = self.propietario.visitantes.get()
-        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=4))
+        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=5))
         self.assertTrue(timezone.is_aware(visita.fecha_inicio))
         self.assertTrue(timezone.is_aware(visita.fecha_fin))
 
@@ -344,7 +344,36 @@ class VisitanteVigenciaTests(TestCase):
         visita = self.propietario.visitantes.get()
         self.assertLessEqual(antes, visita.fecha_inicio)
         self.assertLessEqual(visita.fecha_inicio, despues)
-        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=4))
+        self.assertEqual(visita.fecha_fin, visita.fecha_inicio + timedelta(hours=5))
+
+    def test_visita_permanente_guarda_fecha_fin_nula(self):
+        inicio = timezone.now() - timedelta(days=3)
+
+        response = self._crear(fecha_inicio=inicio.isoformat(), permanente=True)
+
+        self.assertEqual(response.status_code, 201)
+        visita = self.propietario.visitantes.get()
+        self.assertIsNone(visita.fecha_fin)
+        self.assertIsNone(response.data["fecha_fin"])
+        self.assertTrue(visita.vigente)
+
+    def test_visita_permanente_ignora_fecha_fin_recibida(self):
+        response = self._crear(
+            permanente=True,
+            fecha_fin=(timezone.now() - timedelta(days=1)).isoformat(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(self.propietario.visitantes.get().fecha_fin)
+
+    def test_rechaza_fecha_fin_en_el_pasado(self):
+        response = self._crear(
+            fecha_inicio=(timezone.now() - timedelta(days=2)).isoformat(),
+            fecha_fin=(timezone.now() - timedelta(days=1)).isoformat(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no puede estar en el pasado", str(response.data["fecha_fin"][0]))
 
     def test_visita_con_fechas_explicitas_validas(self):
         inicio = timezone.now() + timedelta(hours=1)
@@ -627,10 +656,25 @@ class VerificacionQrGuardiaTests(TestCase):
         historial = self.client.get("/api/ingresos/")
         self.assertEqual(historial.status_code, 403)
 
+    def test_token_de_visita_permanente_antigua_permite_acceso(self):
+        Visitante.objects.filter(pk=self.visita.pk).update(
+            fecha_inicio=timezone.now() - timedelta(days=3), fecha_fin=None
+        )
+        self.client.force_authenticate(self.guardia)
+
+        response = self.client.post(
+            self.url, {"token": str(self.visita.token_qr)}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["permitido"])
+        self.assertIsNone(response.data["fecha_fin"])
+
     def test_token_expirado_deniega_y_conserva_documento_en_log(self):
-        self.visita.fecha_inicio = timezone.now() - timedelta(hours=2)
-        self.visita.fecha_fin = timezone.now() - timedelta(hours=1)
-        self.visita.save()
+        Visitante.objects.filter(pk=self.visita.pk).update(
+            fecha_inicio=timezone.now() - timedelta(hours=2),
+            fecha_fin=timezone.now() - timedelta(hours=1),
+        )
         self.client.force_authenticate(self.guardia)
 
         response = self.client.post(self.url, {"token": str(self.visita.token_qr)}, format="json")
@@ -759,8 +803,11 @@ class VerificacionDocumentoGuardiaTests(TestCase):
 
     def test_autorizacion_expirada_no_es_vigente(self):
         ahora = timezone.now()
-        self.autorizar(self.propietarios[0], fecha_inicio=ahora - timedelta(hours=2),
-                       fecha_fin=ahora - timedelta(hours=1))
+        visita = self.autorizar(self.propietarios[0])
+        Visitante.objects.filter(pk=visita.pk).update(
+            fecha_inicio=ahora - timedelta(hours=2),
+            fecha_fin=ahora - timedelta(hours=1),
+        )
         self.assertFalse(self.verificar().data["permitido"])
 
     def test_autorizacion_futura_no_es_vigente(self):
@@ -768,6 +815,17 @@ class VerificacionDocumentoGuardiaTests(TestCase):
         self.autorizar(self.propietarios[0], fecha_inicio=ahora + timedelta(hours=1),
                        fecha_fin=ahora + timedelta(hours=2))
         self.assertFalse(self.verificar().data["permitido"])
+
+    def test_autorizacion_permanente_antigua_es_vigente(self):
+        visita = self.autorizar(self.propietarios[0])
+        Visitante.objects.filter(pk=visita.pk).update(
+            fecha_inicio=timezone.now() - timedelta(days=3), fecha_fin=None
+        )
+
+        response = self.verificar()
+
+        self.assertTrue(response.data["permitido"])
+        self.assertIsNone(response.data["fecha_fin"])
 
 
 @override_settings(
