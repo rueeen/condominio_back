@@ -1169,7 +1169,7 @@ class VehiculoEstacionamientoInvariantTests(TestCase):
             self.assertEqual(self.solicitar(patente).status_code, 201)
         self.assertEqual(self.solicitar("BCDF15").status_code, 400)
 
-    def test_no_elimina_estacionamiento_si_provoca_exceso(self):
+    def test_eliminar_estacionamiento_conserva_patentes_y_bloquea_nuevas(self):
         primero = Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
         Estacionamiento.objects.create(numero="A2", propietario=self.propietario)
         for patente in ("CDFG11", "CDFG12", "CDFG13"):
@@ -1178,10 +1178,12 @@ class VehiculoEstacionamientoInvariantTests(TestCase):
 
         response = self.client.delete(f"/api/estacionamientos/{primero.pk}/")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertTrue(Estacionamiento.objects.filter(pk=primero.pk).exists())
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Estacionamiento.objects.filter(pk=primero.pk).exists())
+        self.assertEqual(Vehiculo.objects.filter(propietario=self.propietario).count(), 3)
+        self.assertEqual(self.solicitar("CDFG14").status_code, 400)
 
-    def test_reasignacion_invalida_conserva_propietario_anterior(self):
+    def test_desvincular_reduce_limite_sin_eliminar_patentes(self):
         primero = Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
         Estacionamiento.objects.create(numero="A2", propietario=self.propietario)
         for patente in ("DFGH11", "DFGH12", "DFGH13"):
@@ -1190,12 +1192,43 @@ class VehiculoEstacionamientoInvariantTests(TestCase):
 
         response = self.client.patch(
             f"/api/estacionamientos/{primero.pk}/",
+            {"propietario": None}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        primero.refresh_from_db()
+        self.assertIsNone(primero.propietario)
+        self.assertEqual(self.propietario.estacionamientos.count(), 1)
+        self.assertEqual(Vehiculo.objects.filter(propietario=self.propietario).count(), 3)
+        self.assertEqual(self.solicitar("DFGH14").status_code, 400)
+
+    def test_estacionamiento_libre_se_puede_listar_y_reasignar(self):
+        estacionamiento = Estacionamiento.objects.create(numero="LIBRE", propietario=None)
+        self.assertEqual(str(estacionamiento), "Estacionamiento LIBRE - sin asignar")
+        self.client.force_authenticate(self.admin)
+
+        listado = self.client.get("/api/estacionamientos/")
+        response = self.client.patch(
+            f"/api/estacionamientos/{estacionamiento.pk}/",
             {"propietario": self.otro.pk}, format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
-        primero.refresh_from_db()
-        self.assertEqual(primero.propietario, self.propietario)
+        self.assertEqual(listado.status_code, 200)
+        resultados = listado.data.get("results", listado.data)
+        self.assertIsNone(resultados[0]["propietario"])
+        self.assertEqual(response.status_code, 200)
+        estacionamiento.refresh_from_db()
+        self.assertEqual(estacionamiento.propietario, self.otro)
+
+    def test_eliminar_propietario_deja_su_estacionamiento_libre(self):
+        estacionamiento = Estacionamiento.objects.create(
+            numero="A1", propietario=self.propietario
+        )
+
+        self.propietario.delete()
+
+        estacionamiento.refresh_from_db()
+        self.assertIsNone(estacionamiento.propietario)
 
     def test_no_resuelve_dos_veces_una_aprobacion(self):
         Estacionamiento.objects.create(numero="A1", propietario=self.propietario)
