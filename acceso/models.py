@@ -147,7 +147,7 @@ class Visitante(models.Model):
         OTRO = "otro", "Otro"
 
     tipo_documento = models.CharField(max_length=12, choices=TipoDocumento.choices)
-    numero_documento = models.CharField(max_length=40)
+    numero_documento = models.CharField(max_length=40, db_index=True)
     pais_documento = models.CharField(max_length=100, blank=True)
     token_qr = models.UUIDField(
         default=uuid.uuid4, editable=False, unique=True, db_index=True
