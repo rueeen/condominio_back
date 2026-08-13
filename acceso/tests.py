@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+import pytesseract
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -969,27 +970,37 @@ class OCRPatenteTests(TestCase):
 
     @patch("acceso.ocr.pytesseract.image_to_string")
     @patch("acceso.ocr.detectar_regiones_patente")
-    def test_extraer_patente_lee_primer_recorte_valido(self, detectar, tesseract):
-        detectar.return_value = [(10, 20, 80, 30), (0, 0, 60, 20)]
+    def test_extraer_patente_prueba_variantes_antes_de_haar(self, detectar, tesseract):
+        detectar.return_value = [(10, 20, 80, 30)]
         tesseract.side_effect = ["XYZ", "ABCD12"]
 
-        patente = ocr.extraer_patente(self._imagen_bytes())
+        resultado = ocr.extraer_patente(self._imagen_bytes())
 
-        self.assertEqual(patente, "ABCD12")
+        self.assertEqual(resultado.patente, "ABCD12")
+        self.assertEqual(resultado.variante, "reescalada_2_5x_psm7")
         self.assertEqual(tesseract.call_count, 2)
+        detectar.assert_not_called()
 
     @patch("acceso.ocr.pytesseract.image_to_string", return_value="ABCD12")
-    @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
-    def test_extraer_patente_usa_imagen_completa_como_fallback(self, detectar, tesseract):
-        patente = ocr.extraer_patente(self._imagen_bytes())
+    def test_extraer_patente_usa_gris_como_primera_variante(self, tesseract):
+        resultado = ocr.extraer_patente(self._imagen_bytes())
 
-        self.assertEqual(patente, "ABCD12")
+        self.assertEqual(resultado.patente, "ABCD12")
+        self.assertEqual(resultado.variante, "gris_psm7")
         tesseract.assert_called_once()
 
     @patch("acceso.ocr.pytesseract.image_to_string", return_value="XYZ")
     @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
     def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
-        self.assertIsNone(ocr.extraer_patente(self._imagen_bytes()))
+        resultado = ocr.extraer_patente(self._imagen_bytes())
+        self.assertIsNone(resultado.patente)
+        self.assertEqual(len(resultado.textos), 4)
+
+    @patch("acceso.ocr.pytesseract.image_to_string")
+    def test_tesseract_ausente_es_error_de_servicio(self, tesseract):
+        tesseract.side_effect = pytesseract.TesseractNotFoundError()
+        with self.assertRaises(ocr.OcrNoDisponible):
+            ocr.extraer_patente(self._imagen_bytes())
 
 
 class VerificacionDocumentoGuardiaTests(TestCase):
@@ -1184,23 +1195,80 @@ class OCRSeguridadEndpointTests(TestCase):
     def test_rechaza_imagen_demasiado_grande(self):
         self.assertEqual(self.subir(self.imagen(501, 100)).status_code, 400)
 
-    @patch("acceso.ocr.extraer_patente", return_value="ABCD12")
+    @patch("acceso.ocr.extraer_patente")
     def test_acepta_imagen_valida(self, extraer):
+        extraer.return_value = ocr.ResultadoOcr("ABCD12", "gris_psm7", {"gris_psm7": "ABCD12"})
         response = self.subir(self.imagen())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"ok": True, "patente": "ABCD12"})
+        self.assertEqual(response.data["patente"], "ABCD12")
+        self.assertEqual(response.data["variante"], "gris_psm7")
 
-    @patch("acceso.ocr.extraer_patente", return_value=None)
+    @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
     def test_ocr_sin_coincidencias_mantiene_fallback_manual(self, extraer):
         response = self.subir(self.imagen())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.data["ok"])
 
-    @patch("acceso.ocr.extraer_patente", return_value=None)
+    @override_settings(DEBUG=True)
+    @patch("acceso.ocr.extraer_patente")
+    def test_debug_incluye_textos_crudos_solo_si_se_solicita(self, extraer):
+        extraer.return_value = ocr.ResultadoOcr(
+            None, None, {"gris_psm7": "texto sin formato"}
+        )
+        response = self.subir(self.imagen(), url=f"{self.url}?debug=1")
+        self.assertEqual(
+            response.data["debug"]["textos"]["gris_psm7"],
+            "texto sin formato",
+        )
+
+    @override_settings(DEBUG=False)
+    @patch("acceso.ocr.extraer_patente")
+    def test_debug_no_expone_textos_en_produccion(self, extraer):
+        extraer.return_value = ocr.ResultadoOcr(
+            None, None, {"gris_psm7": "texto sin formato"}
+        )
+        response = self.subir(self.imagen(), url=f"{self.url}?debug=1")
+        self.assertNotIn("debug", response.data)
+
+    @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
     def test_throttling_especifico_de_ocr(self, extraer):
-        for _ in range(10):
+        for _ in range(60):
             self.assertEqual(self.subir(self.imagen()).status_code, 200)
         self.assertEqual(self.subir(self.imagen()).status_code, 429)
+
+    @patch("acceso.ocr.extraer_patente", side_effect=ocr.OcrNoDisponible(
+        "El motor OCR no está disponible en el servidor."
+    ))
+    def test_tesseract_ausente_devuelve_503(self, extraer):
+        response = self.subir(self.imagen())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data, {
+            "ok": False,
+            "detalle": "El motor OCR no está disponible en el servidor.",
+        })
+
+
+class EstadoOcrEndpointTests(TestCase):
+    def setUp(self):
+        usuarios = get_user_model()
+        self.admin = usuarios.objects.create_user(username="admin-ocr", rol="admin")
+        self.guardia = usuarios.objects.create_user(username="guardia-estado-ocr", rol="guardia")
+        self.client = APIClient()
+        self.url = "/api/ocr/estado/"
+
+    @patch("acceso.ocr.pytesseract.get_tesseract_version", return_value="5.3.0")
+    def test_admin_obtiene_diagnostico(self, version):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["tesseract"]["version"], "5.3.0")
+        self.assertIn("ruta", response.data["haar"])
+        self.assertEqual(response.data["opencv"]["version"], cv2.__version__)
+        self.assertIn("throttle_rate", response.data["limites"])
+
+    def test_restringe_diagnostico_a_admin(self):
+        self.client.force_authenticate(self.guardia)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
 
 class VehiculoEstacionamientoInvariantTests(TestCase):
     def setUp(self):

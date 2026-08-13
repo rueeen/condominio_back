@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .ocr import LeerPatenteView
+from .ocr import EstadoOcrView, LeerPatenteView
 from .views import (
     EstacionamientoViewSet,
     GuardiaViewSet,
@@ -44,6 +44,7 @@ urlpatterns = [
     path("guardia/verificar-patente/",
          VerificarPatenteView.as_view(), name="verificar-patente"),
     path("ocr/leer-patente/", LeerPatenteView.as_view(), name="leer-patente"),
+    path("ocr/estado/", EstadoOcrView.as_view(), name="estado-ocr"),
 ]
 
 # Rutas resultantes, resumen:

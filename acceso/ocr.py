@@ -3,8 +3,8 @@ Lectura de patentes desde una foto tomada por el guardia.
 
 Flujo:
 1. El celular manda la foto (multipart/form-data) a /ocr/leer-patente/
-2. Se intenta detectar y recortar la región de la patente
-3. Se corre OCR sobre el recorte; si falla, sobre la imagen completa
+2. Se prueban variantes de contraste y escala sobre el recorte enviado
+3. Solo como último recurso se intenta detectar una región con Haar
 4. Se limpia el texto y se valida contra el formato genérico de patente
 5. Si el formato calza -> se devuelve la patente candidata (el frontend luego
    llama a VerificarPatenteView para chequear contra la BD)
@@ -19,6 +19,7 @@ import io
 import logging
 import os
 import re
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -32,7 +33,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .models import PATENTE_REGEX
-from .permissions import EsGuardia
+from .permissions import EsAdmin, EsGuardia
 
 logger = logging.getLogger("acceso.ocr")
 
@@ -54,13 +55,24 @@ if _plate_cascade is None or _plate_cascade.empty():
         "al fallback de imagen completa en cada intento.",
         CASCADE_PATH,
     )
-TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+TESSERACT_WHITELIST = "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 MIME_PERMITIDOS = {"image/jpeg", "image/png", "image/webp"}
 FORMATOS_PERMITIDOS = {"JPEG", "PNG", "WEBP"}
 
 
 class ImagenInvalida(ValueError):
     """Error de entrada seguro para mostrar al cliente, sin detalles internos."""
+
+
+class OcrNoDisponible(RuntimeError):
+    """El motor OCR del servidor no se encuentra o no puede ejecutarse."""
+
+
+@dataclass
+class ResultadoOcr:
+    patente: str | None
+    variante: str | None
+    textos: dict[str, str]
 
 
 def leer_y_validar_archivo(archivo) -> bytes:
@@ -143,13 +155,14 @@ def detectar_regiones_patente(imagen_gris):
     return candidatos_ordenados
 
 
-def leer_patente_desde_imagen(imagen_procesada: np.ndarray) -> str | None:
-    """Ejecuta Tesseract y devuelve una patente válida si el texto calza."""
+def leer_patente_desde_imagen(imagen_procesada: np.ndarray, psm: int = 7) -> tuple[str | None, str]:
+    """Ejecuta Tesseract y devuelve la patente validada y el texto crudo."""
     try:
         texto = pytesseract.image_to_string(
-            imagen_procesada, config=TESSERACT_CONFIG)
+            imagen_procesada, config=f"--psm {psm} {TESSERACT_WHITELIST}")
     except (pytesseract.TesseractError, pytesseract.TesseractNotFoundError, OSError) as error:
-        raise ImagenInvalida("El reconocimiento automático no está disponible.") from error
+        logger.exception("Tesseract no está disponible o no pudo ejecutarse")
+        raise OcrNoDisponible("El motor OCR no está disponible en el servidor.") from error
     candidata = re.sub(r"[^A-Z0-9]", "", texto.upper())
 
     # La expresión acepta deliberadamente patentes internacionales y, por ello,
@@ -157,33 +170,59 @@ def leer_patente_desde_imagen(imagen_procesada: np.ndarray) -> str | None:
     # confirmar o corregir el resultado antes de verificar el vehículo.
     if PATENTE_REGEX.fullmatch(candidata):
         logger.info("Tesseract encontró una patente con formato válido")
-        return candidata
+        return candidata, texto
 
     logger.info("Tesseract no encontró una patente con formato válido")
-    return None
+    return None, texto
 
 
-def extraer_patente(imagen_bytes: bytes) -> str | None:
-    """Devuelve la patente candidata (string) o None si no se detectó nada válido."""
+def _variantes(imagen_gris: np.ndarray):
+    """Genera las variantes en el orden recomendado para recortes de patente."""
+    yield "gris_psm7", imagen_gris, 7
+    escalada = cv2.resize(
+        imagen_gris, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC
+    )
+    yield "reescalada_2_5x_psm7", escalada, 7
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(escalada)
+    _, otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    yield "clahe_otsu_psm7", otsu, 7
+    yield "clahe_otsu_psm6", otsu, 6
+
+
+def _probar_variantes(imagen_gris: np.ndarray, prefijo: str, textos: dict[str, str]):
+    for nombre, imagen, psm in _variantes(imagen_gris):
+        clave = f"{prefijo}{nombre}"
+        patente, texto = leer_patente_desde_imagen(imagen, psm)
+        textos[clave] = texto
+        if patente:
+            logger.info("Tesseract encontró la patente con la variante %s", clave)
+            return patente, clave
+    return None, None
+
+
+def extraer_patente(imagen_bytes: bytes) -> ResultadoOcr:
+    """Prueba variantes y devuelve la patente, la ganadora y los textos crudos."""
     logger.info("Procesando una nueva imagen para OCR")
     imagen_gris = decodificar_imagen_gris(imagen_bytes)
+    textos = {}
 
+    patente, variante = _probar_variantes(imagen_gris, "", textos)
+    if patente:
+        return ResultadoOcr(patente, variante, textos)
+
+    # El front envía un recorte ajustado. Haar queda solamente como último recurso.
     candidatos = detectar_regiones_patente(imagen_gris)
     for i, (x, y, w, h) in enumerate(candidatos):
         logger.info("Probando candidato %d/%d: región (x=%d, y=%d, w=%d, h=%d)",
                     i + 1, len(candidatos), x, y, w, h)
         recorte = imagen_gris[y:y + h, x:x + w]
-        patente = leer_patente_desde_imagen(preprocesar_gris(recorte))
+        patente, variante = _probar_variantes(recorte, f"haar_{i + 1}_", textos)
         if patente:
             logger.info("Patente encontrada en candidato %d", i + 1)
-            return patente
+            return ResultadoOcr(patente, variante, textos)
 
-    # Red de seguridad: mantiene el flujo anterior sobre la imagen completa.
-    logger.info("Ningún candidato del cascade dio una lectura válida (o no hubo "
-                "candidatos) -> probando OCR sobre la imagen completa (fallback)")
-    patente = leer_patente_desde_imagen(preprocesar_gris(imagen_gris))
-    logger.info("Fallback OCR finalizado; coincidencia=%s", bool(patente))
-    return patente
+    logger.info("Ninguna variante OCR produjo una patente válida")
+    return ResultadoOcr(None, None, textos)
 
 
 class LeerPatenteView(APIView):
@@ -198,7 +237,9 @@ class LeerPatenteView(APIView):
             return Response({"detail": "Falta el archivo 'foto'"}, status=400)
 
         try:
-            patente = extraer_patente(leer_y_validar_archivo(archivo))
+            resultado = extraer_patente(leer_y_validar_archivo(archivo))
+        except OcrNoDisponible as error:
+            return Response({"ok": False, "detalle": str(error)}, status=503)
         except ImagenInvalida as error:
             logger.warning("Imagen rechazada por validación o procesamiento")
             return Response({
@@ -212,11 +253,51 @@ class LeerPatenteView(APIView):
                 "detalle": "La imagen no se pudo procesar.",
             }, status=400)
 
-        if patente:
-            return Response({"ok": True, "patente": patente})
+        if resultado.patente:
+            respuesta = {
+                "ok": True,
+                "patente": resultado.patente,
+                "variante": resultado.variante,
+            }
+            if settings.DEBUG and request.query_params.get("debug") == "1":
+                respuesta["debug"] = {"textos": resultado.textos}
+            return Response(respuesta)
 
         # Fallback: el OCR no logró leer una patente válida
-        return Response({
+        respuesta = {
             "ok": False,
             "detalle": "No se pudo leer la patente automáticamente. Ingresa manualmente.",
+        }
+        if settings.DEBUG and request.query_params.get("debug") == "1":
+            respuesta["debug"] = {"textos": resultado.textos}
+        return Response(respuesta)
+
+
+class EstadoOcrView(APIView):
+    """Diagnóstico administrativo de las dependencias y límites del OCR."""
+    permission_classes = [IsAuthenticated, EsAdmin]
+
+    def get(self, request):
+        try:
+            version_tesseract = str(pytesseract.get_tesseract_version())
+            error_tesseract = None
+        except (pytesseract.TesseractError, pytesseract.TesseractNotFoundError, OSError) as error:
+            logger.exception("No se pudo obtener la versión de Tesseract")
+            version_tesseract = None
+            error_tesseract = str(error)
+
+        cascade_cargado = bool(
+            _plate_cascade is not None and not _plate_cascade.empty()
+        )
+        return Response({
+            "tesseract": {"version": version_tesseract, "error": error_tesseract},
+            "opencv": {"version": cv2.__version__},
+            "haar": {"cargado": cascade_cargado, "ruta": CASCADE_PATH},
+            "limites": {
+                "max_upload_bytes": settings.OCR_MAX_UPLOAD_BYTES,
+                "max_image_width": settings.OCR_MAX_IMAGE_WIDTH,
+                "max_image_height": settings.OCR_MAX_IMAGE_HEIGHT,
+                "max_image_pixels": settings.OCR_MAX_IMAGE_PIXELS,
+                "throttle_rate": settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["ocr_recognition"],
+            },
         })
