@@ -972,6 +972,20 @@ class OCRPatenteTests(TestCase):
         self.assertTrue(ok)
         return buffer.tobytes()
 
+    def _patente_rotada(self, angulo):
+        imagen = np.full((140, 400, 3), 255, dtype=np.uint8)
+        cv2.putText(
+            imagen, "JKLM12", (25, 100), cv2.FONT_HERSHEY_SIMPLEX,
+            2.5, (0, 0, 0), 6, cv2.LINE_AA,
+        )
+        matriz = cv2.getRotationMatrix2D((200, 70), angulo, 1)
+        rotada = cv2.warpAffine(
+            imagen, matriz, (400, 140), borderMode=cv2.BORDER_REPLICATE
+        )
+        ok, buffer = cv2.imencode(".jpg", rotada)
+        self.assertTrue(ok)
+        return buffer.tobytes()
+
     @patch("acceso.ocr.pytesseract.image_to_data")
     def test_extraer_patente_elige_la_variante_con_mayor_confianza(self, tesseract):
         tesseract.side_effect = [
@@ -997,13 +1011,45 @@ class OCRPatenteTests(TestCase):
     def test_extraer_patente_devuelve_none_si_no_hay_patente(self, tesseract):
         resultado = ocr.extraer_patente(self._imagen_bytes())
         self.assertIsNone(resultado.patente)
-        self.assertEqual(len(resultado.textos), 4)
+        self.assertEqual(len(resultado.textos), 5)
 
     @patch("acceso.ocr.pytesseract.image_to_data")
     def test_tesseract_ausente_es_error_de_servicio(self, tesseract):
         tesseract.side_effect = pytesseract.TesseractNotFoundError()
         with self.assertRaises(ocr.OcrNoDisponible):
             ocr.extraer_patente(self._imagen_bytes())
+
+    @patch("acceso.ocr.pytesseract.image_to_data")
+    def test_error_del_motor_es_error_de_servicio(self, tesseract):
+        tesseract.side_effect = pytesseract.TesseractError(1, "tessdata corrupto")
+        with self.assertRaises(ocr.OcrNoDisponible):
+            ocr.extraer_patente(self._imagen_bytes())
+
+    @override_settings(OCR_PRESUPUESTO_TOTAL=0.4, OCR_CONFIANZA_ALTA=100)
+    @patch("acceso.ocr.time.monotonic", side_effect=[0, 0.1, 0.5])
+    @patch("acceso.ocr.pytesseract.image_to_data")
+    def test_presupuesto_agotado_conserva_lectura_valida(self, tesseract, monotonic):
+        tesseract.return_value = self._datos("JKLM12", 91)
+
+        resultado = ocr.extraer_patente(self._imagen_bytes())
+
+        self.assertEqual(resultado.patente, "JKLM12")
+        self.assertEqual(resultado.variante, "gris_psm7")
+        self.assertEqual(resultado.confianza, 91)
+
+    @patch("acceso.ocr.pytesseract.image_to_data")
+    def test_endereza_recortes_inclinados_diez_grados(self, tesseract):
+        ilegible = self._datos("", -1)
+        for angulo in (-10, 10):
+            with self.subTest(angulo=angulo):
+                tesseract.reset_mock()
+                tesseract.side_effect = [ilegible] * 4 + [self._datos("JKLM12", 90)]
+
+                resultado = ocr.extraer_patente(self._patente_rotada(angulo))
+
+                self.assertEqual(resultado.patente, "JKLM12")
+                self.assertEqual(resultado.variante, "enderezada_psm7")
+                self.assertEqual(tesseract.call_count, 5)
 
     @override_settings(OCR_MAX_DIM=1600, OCR_MIN_ALTO=90)
     def test_normaliza_imagen_grande_y_recorte_bajo(self):
@@ -1016,7 +1062,7 @@ class OCRPatenteTests(TestCase):
     def test_timeout_de_variante_no_es_error_fatal(self, tesseract):
         resultado = ocr.extraer_patente(self._imagen_bytes())
         self.assertIsNone(resultado.patente)
-        self.assertEqual(tesseract.call_count, 4)
+        self.assertEqual(tesseract.call_count, 5)
 
 
 class VerificacionDocumentoGuardiaTests(TestCase):
@@ -1258,6 +1304,19 @@ class OCRSeguridadEndpointTests(TestCase):
     ))
     def test_tesseract_ausente_devuelve_503(self, extraer):
         response = self.subir(self.imagen())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data, {
+            "ok": False,
+            "detalle": "El motor OCR no está disponible en el servidor.",
+        })
+
+    @patch(
+        "acceso.ocr.pytesseract.image_to_data",
+        side_effect=pytesseract.TesseractError(1, "tessdata corrupto"),
+    )
+    def test_error_del_motor_tesseract_devuelve_503(self, tesseract):
+        response = self.subir(self.imagen())
+
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data, {
             "ok": False,

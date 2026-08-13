@@ -89,6 +89,10 @@ texto crudo producido por cada variante. Una lectura exitosa informa la
 `OCR_TIMEOUT_VARIANTE` y `OCR_PRESUPUESTO_TOTAL` limitan el tiempo, mientras
 `OCR_CONFIANZA_MINIMA` y `OCR_CONFIANZA_ALTA` controlan la selección.
 
+El servidor de desarrollo del frontend usa HTTPS por defecto. Por eso, al
+trabajar localmente, `https://localhost:5173` debe estar incluido en
+`CORS_ALLOWED_ORIGINS` (el `.env.example` admite también el origen HTTP).
+
 El clasificador se desactiva por defecto y se habilita con `OCR_USAR_HAAR=True`,
 porque su costo es alto y aún no demostró mejorar lecturas. El XML es candidato
 a eliminarse si los logs de pruebas confirman que nunca gana.
