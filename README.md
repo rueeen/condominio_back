@@ -83,5 +83,12 @@ dimensiones y tasa de *throttle*. Para pruebas con celular se recomienda definir
 `OCR_RECOGNITION_THROTTLE_RATE=60/min` en el entorno.
 
 En desarrollo (`DEBUG=True`), `POST /api/ocr/leer-patente/?debug=1` incluye el
-texto crudo producido por cada variante. Una lectura exitosa siempre informa la
-`variante` ganadora; los textos de diagnóstico nunca se exponen en producción.
+texto crudo producido por cada variante. Una lectura exitosa informa la
+`variante` ganadora y su `confianza`; los textos nunca se exponen en producción.
+`OCR_MAX_DIM` y `OCR_MIN_ALTO` acotan las imágenes antes de crear variantes;
+`OCR_TIMEOUT_VARIANTE` y `OCR_PRESUPUESTO_TOTAL` limitan el tiempo, mientras
+`OCR_CONFIANZA_MINIMA` y `OCR_CONFIANZA_ALTA` controlan la selección.
+
+El clasificador se desactiva por defecto y se habilita con `OCR_USAR_HAAR=True`,
+porque su costo es alto y aún no demostró mejorar lecturas. El XML es candidato
+a eliminarse si los logs de pruebas confirman que nunca gana.

@@ -157,6 +157,13 @@ OCR_MAX_UPLOAD_BYTES = config('OCR_MAX_UPLOAD_BYTES', default=5 * 1024 * 1024, c
 OCR_MAX_IMAGE_WIDTH = config('OCR_MAX_IMAGE_WIDTH', default=4096, cast=int)
 OCR_MAX_IMAGE_HEIGHT = config('OCR_MAX_IMAGE_HEIGHT', default=4096, cast=int)
 OCR_MAX_IMAGE_PIXELS = config('OCR_MAX_IMAGE_PIXELS', default=12_000_000, cast=int)
+OCR_MAX_DIM = config('OCR_MAX_DIM', default=1600, cast=int)
+OCR_MIN_ALTO = config('OCR_MIN_ALTO', default=90, cast=int)
+OCR_TIMEOUT_VARIANTE = config('OCR_TIMEOUT_VARIANTE', default=5, cast=float)
+OCR_PRESUPUESTO_TOTAL = config('OCR_PRESUPUESTO_TOTAL', default=15, cast=float)
+OCR_CONFIANZA_MINIMA = config('OCR_CONFIANZA_MINIMA', default=45, cast=float)
+OCR_CONFIANZA_ALTA = config('OCR_CONFIANZA_ALTA', default=80, cast=float)
+OCR_USAR_HAAR = config('OCR_USAR_HAAR', default=False, cast=bool)
 
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',

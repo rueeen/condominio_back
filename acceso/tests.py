@@ -962,26 +962,30 @@ class PerfilEndpointTests(TestCase):
         )
 
 class OCRPatenteTests(TestCase):
+    @staticmethod
+    def _datos(texto, confianza=90):
+        return {"text": [texto], "conf": [str(confianza)]}
+
     def _imagen_bytes(self):
         imagen = np.full((120, 240, 3), 255, dtype=np.uint8)
         ok, buffer = cv2.imencode(".jpg", imagen)
         self.assertTrue(ok)
         return buffer.tobytes()
 
-    @patch("acceso.ocr.pytesseract.image_to_string")
-    @patch("acceso.ocr.detectar_regiones_patente")
-    def test_extraer_patente_prueba_variantes_antes_de_haar(self, detectar, tesseract):
-        detectar.return_value = [(10, 20, 80, 30)]
-        tesseract.side_effect = ["XYZ", "ABCD12"]
+    @patch("acceso.ocr.pytesseract.image_to_data")
+    def test_extraer_patente_elige_la_variante_con_mayor_confianza(self, tesseract):
+        tesseract.side_effect = [
+            self._datos("ABCD12", 50), self._datos("JKLM12", 85)
+        ]
 
         resultado = ocr.extraer_patente(self._imagen_bytes())
 
-        self.assertEqual(resultado.patente, "ABCD12")
+        self.assertEqual(resultado.patente, "JKLM12")
         self.assertEqual(resultado.variante, "reescalada_2_5x_psm7")
+        self.assertEqual(resultado.confianza, 85)
         self.assertEqual(tesseract.call_count, 2)
-        detectar.assert_not_called()
 
-    @patch("acceso.ocr.pytesseract.image_to_string", return_value="ABCD12")
+    @patch("acceso.ocr.pytesseract.image_to_data", return_value={"text": ["ABCD12"], "conf": ["90"]})
     def test_extraer_patente_usa_gris_como_primera_variante(self, tesseract):
         resultado = ocr.extraer_patente(self._imagen_bytes())
 
@@ -989,18 +993,30 @@ class OCRPatenteTests(TestCase):
         self.assertEqual(resultado.variante, "gris_psm7")
         tesseract.assert_called_once()
 
-    @patch("acceso.ocr.pytesseract.image_to_string", return_value="XYZ")
-    @patch("acceso.ocr.detectar_regiones_patente", return_value=[])
-    def test_extraer_patente_devuelve_none_si_no_hay_patente(self, detectar, tesseract):
+    @patch("acceso.ocr.pytesseract.image_to_data", return_value={"text": ["XYZ"], "conf": ["90"]})
+    def test_extraer_patente_devuelve_none_si_no_hay_patente(self, tesseract):
         resultado = ocr.extraer_patente(self._imagen_bytes())
         self.assertIsNone(resultado.patente)
         self.assertEqual(len(resultado.textos), 4)
 
-    @patch("acceso.ocr.pytesseract.image_to_string")
+    @patch("acceso.ocr.pytesseract.image_to_data")
     def test_tesseract_ausente_es_error_de_servicio(self, tesseract):
         tesseract.side_effect = pytesseract.TesseractNotFoundError()
         with self.assertRaises(ocr.OcrNoDisponible):
             ocr.extraer_patente(self._imagen_bytes())
+
+    @override_settings(OCR_MAX_DIM=1600, OCR_MIN_ALTO=90)
+    def test_normaliza_imagen_grande_y_recorte_bajo(self):
+        grande = ocr.normalizar_dimensiones(np.zeros((1200, 2400), dtype=np.uint8))
+        recorte = ocr.normalizar_dimensiones(np.zeros((30, 120), dtype=np.uint8))
+        self.assertEqual(grande.shape, (800, 1600))
+        self.assertEqual(recorte.shape, (90, 360))
+
+    @patch("acceso.ocr.pytesseract.image_to_data", side_effect=RuntimeError("timeout"))
+    def test_timeout_de_variante_no_es_error_fatal(self, tesseract):
+        resultado = ocr.extraer_patente(self._imagen_bytes())
+        self.assertIsNone(resultado.patente)
+        self.assertEqual(tesseract.call_count, 4)
 
 
 class VerificacionDocumentoGuardiaTests(TestCase):
@@ -1197,11 +1213,12 @@ class OCRSeguridadEndpointTests(TestCase):
 
     @patch("acceso.ocr.extraer_patente")
     def test_acepta_imagen_valida(self, extraer):
-        extraer.return_value = ocr.ResultadoOcr("ABCD12", "gris_psm7", {"gris_psm7": "ABCD12"})
+        extraer.return_value = ocr.ResultadoOcr("ABCD12", "gris_psm7", {"gris_psm7": "ABCD12"}, 92)
         response = self.subir(self.imagen())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["patente"], "ABCD12")
         self.assertEqual(response.data["variante"], "gris_psm7")
+        self.assertEqual(response.data["confianza"], 92)
 
     @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
     def test_ocr_sin_coincidencias_mantiene_fallback_manual(self, extraer):

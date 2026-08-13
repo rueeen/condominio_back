@@ -19,6 +19,7 @@ import io
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -45,10 +46,10 @@ CASCADE_PATH = os.path.join(
 )
 _plate_cascade = (
     cv2.CascadeClassifier(CASCADE_PATH)
-    if hasattr(cv2, "CascadeClassifier")
+    if settings.OCR_USAR_HAAR and hasattr(cv2, "CascadeClassifier")
     else None
 )
-if _plate_cascade is None or _plate_cascade.empty():
+if settings.OCR_USAR_HAAR and (_plate_cascade is None or _plate_cascade.empty()):
     logger.warning(
         "El clasificador Haar no cargó desde %s (¿archivo faltante, "
         "vacío o corrupto?). La detección de patente va a saltar directo "
@@ -73,6 +74,7 @@ class ResultadoOcr:
     patente: str | None
     variante: str | None
     textos: dict[str, str]
+    confianza: float | None = None
 
 
 def leer_y_validar_archivo(archivo) -> bytes:
@@ -123,18 +125,29 @@ def decodificar_imagen_gris(imagen_bytes: bytes) -> np.ndarray:
         raise ImagenInvalida("No se pudo procesar la imagen recibida") from error
 
 
-def preprocesar_gris(imagen_gris: np.ndarray) -> np.ndarray:
-    """Aplica el preprocesamiento usado antes del OCR."""
-    gris = cv2.bilateralFilter(
-        imagen_gris, 11, 17, 17)  # reduce ruido, conserva bordes
-    _, binaria = cv2.threshold(
-        gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binaria
-
-
-def preprocesar_imagen(imagen_bytes: bytes) -> np.ndarray:
-    """Convierte la foto a un formato que facilita la lectura del OCR."""
-    return preprocesar_gris(decodificar_imagen_gris(imagen_bytes))
+def normalizar_dimensiones(imagen_gris: np.ndarray) -> np.ndarray:
+    """Acota imágenes grandes o amplía recortes demasiado bajos."""
+    alto, ancho = imagen_gris.shape[:2]
+    normalizada = imagen_gris
+    if max(alto, ancho) > settings.OCR_MAX_DIM:
+        escala = settings.OCR_MAX_DIM / max(alto, ancho)
+        normalizada = cv2.resize(
+            imagen_gris,
+            (round(ancho * escala), round(alto * escala)),
+            interpolation=cv2.INTER_AREA,
+        )
+    elif alto < settings.OCR_MIN_ALTO:
+        escala = settings.OCR_MIN_ALTO / alto
+        normalizada = cv2.resize(
+            imagen_gris,
+            (round(ancho * escala), settings.OCR_MIN_ALTO),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    logger.info(
+        "Dimensiones OCR originales=%dx%d, normalizadas=%dx%d",
+        ancho, alto, normalizada.shape[1], normalizada.shape[0],
+    )
+    return normalizada
 
 
 def detectar_regiones_patente(imagen_gris):
@@ -155,25 +168,49 @@ def detectar_regiones_patente(imagen_gris):
     return candidatos_ordenados
 
 
-def leer_patente_desde_imagen(imagen_procesada: np.ndarray, psm: int = 7) -> tuple[str | None, str]:
-    """Ejecuta Tesseract y devuelve la patente validada y el texto crudo."""
+def leer_patente_desde_imagen(imagen_procesada: np.ndarray, psm: int = 7):
+    """Ejecuta Tesseract y devuelve patente, texto y confianza media."""
     try:
-        texto = pytesseract.image_to_string(
-            imagen_procesada, config=f"--psm {psm} {TESSERACT_WHITELIST}")
-    except (pytesseract.TesseractError, pytesseract.TesseractNotFoundError, OSError) as error:
+        datos = pytesseract.image_to_data(
+            imagen_procesada, config=f"--psm {psm} {TESSERACT_WHITELIST}",
+            output_type=pytesseract.Output.DICT,
+            timeout=settings.OCR_TIMEOUT_VARIANTE,
+        )
+    except pytesseract.TesseractNotFoundError as error:
         logger.exception("Tesseract no está disponible o no pudo ejecutarse")
         raise OcrNoDisponible("El motor OCR no está disponible en el servidor.") from error
-    candidata = re.sub(r"[^A-Z0-9]", "", texto.upper())
+    except RuntimeError as error:
+        logger.warning("La variante de Tesseract falló o agotó su timeout: %s", error)
+        return None, "", None
+    except OSError as error:
+        logger.exception("Tesseract no está disponible o no pudo ejecutarse")
+        raise OcrNoDisponible("El motor OCR no está disponible en el servidor.") from error
+
+    partes, confianzas = [], []
+    for texto, confianza in zip(datos.get("text", []), datos.get("conf", [])):
+        parte = re.sub(r"[^A-Z0-9]", "", str(texto).upper())
+        if parte:
+            partes.append(parte)
+            try:
+                valor = float(confianza)
+                if valor >= 0:
+                    confianzas.append(valor)
+            except (TypeError, ValueError):
+                pass
+    texto_crudo = " ".join(str(item) for item in datos.get("text", [])).strip()
+    candidata = "".join(partes)
+    confianza_media = sum(confianzas) / len(confianzas) if confianzas else None
 
     # La expresión acepta deliberadamente patentes internacionales y, por ello,
     # puede admitir más falsos positivos alfanuméricos. El guardia siempre debe
     # confirmar o corregir el resultado antes de verificar el vehículo.
-    if PATENTE_REGEX.fullmatch(candidata):
+    if (PATENTE_REGEX.fullmatch(candidata) and confianza_media is not None
+            and confianza_media >= settings.OCR_CONFIANZA_MINIMA):
         logger.info("Tesseract encontró una patente con formato válido")
-        return candidata, texto
+        return candidata, texto_crudo, confianza_media
 
     logger.info("Tesseract no encontró una patente con formato válido")
-    return None, texto
+    return None, texto_crudo, confianza_media
 
 
 def _variantes(imagen_gris: np.ndarray):
@@ -189,15 +226,21 @@ def _variantes(imagen_gris: np.ndarray):
     yield "clahe_otsu_psm6", otsu, 6
 
 
-def _probar_variantes(imagen_gris: np.ndarray, prefijo: str, textos: dict[str, str]):
-    for nombre, imagen, psm in _variantes(imagen_gris):
+def _probar_variantes(imagen_gris, prefijo, textos, inicio):
+    mejor = (None, None, None)
+    for nombre, imagen, psm in _variantes(normalizar_dimensiones(imagen_gris)):
+        if time.monotonic() - inicio >= settings.OCR_PRESUPUESTO_TOTAL:
+            return mejor, True
         clave = f"{prefijo}{nombre}"
-        patente, texto = leer_patente_desde_imagen(imagen, psm)
+        patente, texto, confianza = leer_patente_desde_imagen(imagen, psm)
         textos[clave] = texto
-        if patente:
-            logger.info("Tesseract encontró la patente con la variante %s", clave)
-            return patente, clave
-    return None, None
+        if time.monotonic() - inicio >= settings.OCR_PRESUPUESTO_TOTAL:
+            return mejor, True
+        if patente and (mejor[2] is None or confianza > mejor[2]):
+            mejor = (patente, clave, confianza)
+            if confianza >= settings.OCR_CONFIANZA_ALTA:
+                break
+    return mejor, False
 
 
 def extraer_patente(imagen_bytes: bytes) -> ResultadoOcr:
@@ -205,22 +248,29 @@ def extraer_patente(imagen_bytes: bytes) -> ResultadoOcr:
     logger.info("Procesando una nueva imagen para OCR")
     imagen_gris = decodificar_imagen_gris(imagen_bytes)
     textos = {}
+    inicio = time.monotonic()
 
-    patente, variante = _probar_variantes(imagen_gris, "", textos)
-    if patente:
-        return ResultadoOcr(patente, variante, textos)
+    mejor, agotado = _probar_variantes(imagen_gris, "", textos, inicio)
+    if agotado:
+        logger.warning("OCR superó el presupuesto global")
+        return ResultadoOcr(None, None, textos)
 
     # El front envía un recorte ajustado. Haar queda solamente como último recurso.
-    candidatos = detectar_regiones_patente(imagen_gris)
+    candidatos = detectar_regiones_patente(imagen_gris) if settings.OCR_USAR_HAAR else []
     for i, (x, y, w, h) in enumerate(candidatos):
         logger.info("Probando candidato %d/%d: región (x=%d, y=%d, w=%d, h=%d)",
                     i + 1, len(candidatos), x, y, w, h)
         recorte = imagen_gris[y:y + h, x:x + w]
-        patente, variante = _probar_variantes(recorte, f"haar_{i + 1}_", textos)
-        if patente:
-            logger.info("Patente encontrada en candidato %d", i + 1)
-            return ResultadoOcr(patente, variante, textos)
+        candidato, agotado = _probar_variantes(
+            recorte, f"haar_{i + 1}_", textos, inicio
+        )
+        if agotado:
+            return ResultadoOcr(None, None, textos)
+        if candidato[2] is not None and (mejor[2] is None or candidato[2] > mejor[2]):
+            mejor = candidato
 
+    if mejor[0]:
+        return ResultadoOcr(mejor[0], mejor[1], textos, mejor[2])
     logger.info("Ninguna variante OCR produjo una patente válida")
     return ResultadoOcr(None, None, textos)
 
@@ -258,6 +308,7 @@ class LeerPatenteView(APIView):
                 "ok": True,
                 "patente": resultado.patente,
                 "variante": resultado.variante,
+                "confianza": resultado.confianza,
             }
             if settings.DEBUG and request.query_params.get("debug") == "1":
                 respuesta["debug"] = {"textos": resultado.textos}
@@ -298,6 +349,13 @@ class EstadoOcrView(APIView):
                 "max_image_width": settings.OCR_MAX_IMAGE_WIDTH,
                 "max_image_height": settings.OCR_MAX_IMAGE_HEIGHT,
                 "max_image_pixels": settings.OCR_MAX_IMAGE_PIXELS,
+                "max_dim": settings.OCR_MAX_DIM,
+                "min_alto": settings.OCR_MIN_ALTO,
+                "timeout_variante": settings.OCR_TIMEOUT_VARIANTE,
+                "presupuesto_total": settings.OCR_PRESUPUESTO_TOTAL,
+                "confianza_minima": settings.OCR_CONFIANZA_MINIMA,
+                "confianza_alta": settings.OCR_CONFIANZA_ALTA,
+                "usar_haar": settings.OCR_USAR_HAAR,
                 "throttle_rate": settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["ocr_recognition"],
             },
         })
