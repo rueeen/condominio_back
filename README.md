@@ -11,7 +11,7 @@ OCR.
 - `pip` y soporte para entornos virtuales (`venv`).
 - **Tesseract OCR (`tesseract-ocr`) instalado en el sistema operativo.** No es
   una dependencia de `pip`: si falta, los intentos de leer una patente no podrán
-  ejecutar el motor OCR y la API devolverá un error de procesamiento.
+  ejecutar el motor OCR y la API devolverá HTTP 503.
 
 En Debian o Ubuntu, Tesseract se puede instalar con:
 
@@ -64,7 +64,24 @@ presionar **Reload** en la aplicación web:
 ```bash
 pip install -r requirements.txt
 python manage.py migrate
+tesseract --version   # debe responder; si no, el OCR devolverá 503
 ```
 
 Este paso aplica nuevas dependencias y cambios de base de datos; omitirlo puede
 dejar el código desplegado incompatible con el entorno o el esquema existente.
+
+Si el binario no está disponible en el plan de PythonAnywhere utilizado, el
+flujo debe quedar en ingreso manual de patente. Esta decisión debe tomarse antes
+de seguir invirtiendo en el reconocimiento OCR.
+
+### Diagnóstico del OCR
+
+Un administrador autenticado puede consultar `GET /api/ocr/estado/`. La
+respuesta informa la versión (o error) de Tesseract, la versión de OpenCV, si el
+clasificador Haar cargó y desde qué ruta, además de los límites de carga,
+dimensiones y tasa de *throttle*. Para pruebas con celular se recomienda definir
+`OCR_RECOGNITION_THROTTLE_RATE=60/min` en el entorno.
+
+En desarrollo (`DEBUG=True`), `POST /api/ocr/leer-patente/?debug=1` incluye el
+texto crudo producido por cada variante. Una lectura exitosa siempre informa la
+`variante` ganadora; los textos de diagnóstico nunca se exponen en producción.
