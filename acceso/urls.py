@@ -57,6 +57,8 @@ urlpatterns = [
 # PATCH      /propietarios/{id}/          (admin, edita torre/departamento)
 # GET/POST   /estacionamientos/           (admin, CRUD completo)
 # GET/PATCH/DELETE /estacionamientos/{id}/ (admin)
+# GET        /estacionamientos/resumen/   (admin, totales agregados)
+# POST       /estacionamientos/asignar/   (admin, crea o asigna por número)
 # GET        /mis-estacionamientos/       (propietario, solo lectura: sus propios números)
 # GET/PATCH  /perfil/                      (usuario autenticado, perfil propio)
 # POST       /perfil/regenerar-qr/         (propietario, revoca y renueva su QR)
