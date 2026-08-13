@@ -284,6 +284,154 @@ class PropietarioAltaEndpointTests(TestCase):
         self.assertEqual(patch_response.data["first_name"], "Nombre actualizado")
 
 
+class EstacionamientoAdministracionTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.admin = user_model.objects.create_user(
+            username="admin-estacionamientos", password="clave", rol="admin"
+        )
+        self.guardia = user_model.objects.create_user(
+            username="guardia-estacionamientos", password="clave", rol="guardia"
+        )
+        self.ana = user_model.objects.create_user(
+            username="ana21", first_name="Ana", last_name="Pérez", password="clave",
+            rol="propietario", torre=21, departamento=101,
+        )
+        self.bruno = user_model.objects.create_user(
+            username="bruno", first_name="Bruno", last_name="Soto", password="clave",
+            rol="propietario", torre=4, departamento=12,
+        )
+        self.carla = user_model.objects.create_user(
+            username="carla", first_name="Carla", last_name="Rojas", password="clave",
+            rol="propietario", torre=4, departamento=13,
+        )
+        self.asignado = Estacionamiento.objects.create(numero="A-228", propietario=self.ana)
+        self.libre = Estacionamiento.objects.create(numero="B-228")
+        Estacionamiento.objects.create(numero="C-900", propietario=self.bruno)
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    @staticmethod
+    def ids(response):
+        return {item["id"] for item in response.data.get("results", response.data)}
+
+    def test_filtros_estacionamientos_y_listado_sin_parametros(self):
+        self.assertEqual(len(self.ids(self.client.get("/api/estacionamientos/"))), 3)
+        self.assertEqual(
+            self.ids(self.client.get("/api/estacionamientos/?asignado=false")),
+            {self.libre.pk},
+        )
+        self.assertEqual(
+            len(self.ids(self.client.get("/api/estacionamientos/?asignado=true"))), 2
+        )
+        self.assertEqual(
+            self.ids(self.client.get(f"/api/estacionamientos/?propietario={self.ana.pk}")),
+            {self.asignado.pk},
+        )
+        self.assertEqual(
+            self.ids(self.client.get("/api/estacionamientos/?buscar=a-2")),
+            {self.asignado.pk},
+        )
+
+    def test_filtros_propietarios_y_listado_sin_parametros(self):
+        self.assertEqual(len(self.ids(self.client.get("/api/propietarios/"))), 3)
+        for texto in ("ana21", "Ana", "pérez", "21", "101"):
+            with self.subTest(texto=texto):
+                self.assertEqual(
+                    self.ids(self.client.get(f"/api/propietarios/?buscar={texto}")),
+                    {self.ana.pk},
+                )
+        self.assertEqual(
+            self.ids(self.client.get("/api/propietarios/?torre=4")),
+            {self.bruno.pk, self.carla.pk},
+        )
+        self.assertEqual(
+            self.ids(self.client.get("/api/propietarios/?sin_estacionamiento=true")),
+            {self.carla.pk},
+        )
+
+    def test_filtros_encuentran_registros_despues_de_la_primera_pagina(self):
+        user_model = get_user_model()
+        extras = [
+            user_model(
+                username=f"extra-{numero}", rol="propietario", torre=numero % 20 + 1,
+                departamento=1000 + numero,
+            )
+            for numero in range(51)
+        ]
+        user_model.objects.bulk_create(extras)
+        ultimo = user_model.objects.get(username="extra-50")
+        for numero in range(51):
+            Estacionamiento.objects.create(numero=f"X-{numero:03}")
+
+        propietarios = self.client.get("/api/propietarios/?buscar=extra-50")
+        estacionamientos = self.client.get("/api/estacionamientos/?buscar=X-050")
+
+        self.assertEqual(self.ids(propietarios), {ultimo.pk})
+        self.assertEqual(len(self.ids(estacionamientos)), 1)
+
+    def test_resumen_con_datos_mezclados(self):
+        with self.assertNumQueries(2):
+            response = self.client.get("/api/estacionamientos/resumen/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "total": 3, "asignados": 2, "libres": 1,
+            "propietarios_sin_estacionamiento": 1,
+        })
+
+    def test_asignar_crea_un_numero_nuevo(self):
+        response = self.client.post(
+            "/api/estacionamientos/asignar/",
+            {"numero": "NUEVO", "propietario": self.carla.pk}, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Estacionamiento.objects.get(numero="NUEVO").propietario, self.carla)
+
+    def test_asignar_un_numero_libre(self):
+        response = self.client.post(
+            "/api/estacionamientos/asignar/",
+            {"numero": self.libre.numero, "propietario": self.carla.pk}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.libre.refresh_from_db()
+        self.assertEqual(self.libre.propietario, self.carla)
+
+    def test_asignar_al_mismo_propietario_no_cambia_nada(self):
+        response = self.client.post(
+            "/api/estacionamientos/asignar/",
+            {"numero": self.asignado.numero, "propietario": self.ana.pk}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Estacionamiento.objects.filter(numero=self.asignado.numero).count(), 1)
+
+    def test_asignar_a_otro_propietario_informa_conflicto(self):
+        response = self.client.post(
+            "/api/estacionamientos/asignar/",
+            {"numero": "C-900", "propietario": self.carla.pk}, format="json",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("detalle", response.data)
+        self.assertEqual(response.data["propietario_actual"], {
+            "id": self.bruno.pk, "torre": 4, "departamento": 12,
+        })
+
+    def test_post_normal_muestra_error_de_unicidad_en_espanol(self):
+        response = self.client.post(
+            "/api/estacionamientos/", {"numero": self.libre.numero}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["numero"][0]), "Ya existe un estacionamiento con este número.")
+
+    def test_no_admin_recibe_403_en_los_endpoints_nuevos(self):
+        self.client.force_authenticate(self.guardia)
+        self.assertEqual(self.client.get("/api/estacionamientos/resumen/").status_code, 403)
+        self.assertEqual(self.client.post(
+            "/api/estacionamientos/asignar/",
+            {"numero": "SIN-PERMISO", "propietario": self.carla.pk}, format="json",
+        ).status_code, 403)
+
+
 class VehiculoEstadoFilterTests(TestCase):
     def setUp(self):
         user_model = get_user_model()

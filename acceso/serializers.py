@@ -75,6 +75,23 @@ class EstacionamientoSerializer(serializers.ModelSerializer):
         model = Estacionamiento
         fields = ["id", "numero", "propietario"]
         read_only_fields = ["id"]
+        extra_kwargs = {
+            "numero": {
+                "validators": [
+                    UniqueValidator(
+                        queryset=Estacionamiento.objects.all(),
+                        message="Ya existe un estacionamiento con este número.",
+                    )
+                ]
+            }
+        }
+
+
+class AsignarEstacionamientoSerializer(serializers.Serializer):
+    numero = serializers.CharField(max_length=10)
+    propietario = serializers.PrimaryKeyRelatedField(
+        queryset=Usuario.objects.filter(rol=Usuario.Rol.PROPIETARIO)
+    )
 
 
 class VisitanteSerializer(serializers.ModelSerializer):

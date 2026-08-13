@@ -2,7 +2,7 @@ import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -25,6 +25,7 @@ from .models import (
 )
 from .permissions import EsAdmin, EsGuardia, EsPropietario
 from .serializers import (
+    AsignarEstacionamientoSerializer,
     CondominioTokenObtainPairSerializer,
     DocumentoVerificacionSerializer,
     EstacionamientoSerializer,
@@ -404,6 +405,24 @@ class PropietarioViewSet(viewsets.ModelViewSet):
     queryset = Usuario.objects.filter(
         rol=Usuario.Rol.PROPIETARIO).prefetch_related("estacionamientos").order_by("torre", "departamento")
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        buscar = self.request.query_params.get("buscar")
+        if buscar:
+            queryset = queryset.filter(
+                Q(username__icontains=buscar)
+                | Q(first_name__icontains=buscar)
+                | Q(last_name__icontains=buscar)
+                | Q(torre__icontains=buscar)
+                | Q(departamento__icontains=buscar)
+            )
+        torre = self.request.query_params.get("torre")
+        if torre:
+            queryset = queryset.filter(torre=torre)
+        if self.request.query_params.get("sin_estacionamiento", "").lower() == "true":
+            queryset = queryset.filter(estacionamientos__isnull=True)
+        return queryset
+
     def get_serializer_class(self):
         if self.action == "create":
             return PropietarioAltaSerializer
@@ -421,7 +440,73 @@ class EstacionamientoViewSet(viewsets.ModelViewSet):
     """
     serializer_class = EstacionamientoSerializer
     permission_classes = [IsAuthenticated, EsAdmin]
-    queryset = Estacionamiento.objects.all()
+    queryset = Estacionamiento.objects.select_related("propietario").all()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        asignado = self.request.query_params.get("asignado", "").lower()
+        if asignado == "true":
+            queryset = queryset.filter(propietario__isnull=False)
+        elif asignado == "false":
+            queryset = queryset.filter(propietario__isnull=True)
+        propietario = self.request.query_params.get("propietario")
+        if propietario:
+            queryset = queryset.filter(propietario_id=propietario)
+        buscar = self.request.query_params.get("buscar")
+        if buscar:
+            queryset = queryset.filter(numero__icontains=buscar)
+        return queryset
+
+    @action(detail=False, methods=["get"])
+    def resumen(self, request):
+        cantidades = Estacionamiento.objects.aggregate(
+            total=Count("id"),
+            asignados=Count("id", filter=Q(propietario__isnull=False)),
+            libres=Count("id", filter=Q(propietario__isnull=True)),
+        )
+        cantidades["propietarios_sin_estacionamiento"] = Usuario.objects.filter(
+            rol=Usuario.Rol.PROPIETARIO,
+            estacionamientos__isnull=True,
+        ).count()
+        return Response(cantidades)
+
+    @action(detail=False, methods=["post"])
+    def asignar(self, request):
+        serializer = AsignarEstacionamientoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        numero = serializer.validated_data["numero"]
+        propietario = serializer.validated_data["propietario"]
+
+        with transaction.atomic():
+            self._lock_propietarios(propietario.pk)
+            estacionamiento = Estacionamiento.objects.select_for_update().filter(
+                numero=numero
+            ).first()
+            if estacionamiento is None:
+                estacionamiento = Estacionamiento.objects.create(
+                    numero=numero, propietario=propietario
+                )
+                codigo = status.HTTP_201_CREATED
+            elif estacionamiento.propietario_id is None:
+                estacionamiento.propietario = propietario
+                estacionamiento.save(update_fields=["propietario"])
+                codigo = status.HTTP_200_OK
+            elif estacionamiento.propietario_id == propietario.pk:
+                codigo = status.HTTP_200_OK
+            else:
+                actual = estacionamiento.propietario
+                return Response(
+                    {
+                        "detalle": "El estacionamiento ya está asignado a otro propietario.",
+                        "propietario_actual": {
+                            "id": actual.pk,
+                            "torre": actual.torre,
+                            "departamento": actual.departamento,
+                        },
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        return Response(EstacionamientoSerializer(estacionamiento).data, status=codigo)
 
     @staticmethod
     def _lock_propietarios(*propietario_ids):
