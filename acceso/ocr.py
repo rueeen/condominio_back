@@ -179,8 +179,11 @@ def leer_patente_desde_imagen(imagen_procesada: np.ndarray, psm: int = 7):
     except pytesseract.TesseractNotFoundError as error:
         logger.exception("Tesseract no está disponible o no pudo ejecutarse")
         raise OcrNoDisponible("El motor OCR no está disponible en el servidor.") from error
+    except pytesseract.TesseractError as error:
+        logger.exception("Tesseract está instalado pero falló al ejecutar el OCR")
+        raise OcrNoDisponible("El motor OCR no está disponible en el servidor.") from error
     except RuntimeError as error:
-        logger.warning("La variante de Tesseract falló o agotó su timeout: %s", error)
+        logger.warning("La variante de Tesseract agotó su timeout: %s", error)
         return None, "", None
     except OSError as error:
         logger.exception("Tesseract no está disponible o no pudo ejecutarse")
@@ -224,6 +227,36 @@ def _variantes(imagen_gris: np.ndarray):
     _, otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     yield "clahe_otsu_psm7", otsu, 7
     yield "clahe_otsu_psm6", otsu, 6
+    yield "enderezada_psm7", _enderezar(imagen_gris), 7
+
+
+def _enderezar(imagen_gris: np.ndarray, angulo_maximo: float = 20) -> np.ndarray:
+    """Corrige inclinaciones moderadas usando los píxeles oscuros como texto."""
+    _, invertida = cv2.threshold(
+        imagen_gris, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+    puntos = cv2.findNonZero(invertida)
+    if puntos is None or len(puntos) < 3:
+        return imagen_gris
+
+    angulo = float(cv2.minAreaRect(puntos)[-1])
+    if angulo < -45:
+        angulo += 90
+    elif angulo > 45:
+        angulo -= 90
+    if abs(angulo) > angulo_maximo:
+        logger.info("Enderezado descartado por ángulo de %.1f grados", angulo)
+        return imagen_gris
+
+    alto, ancho = imagen_gris.shape[:2]
+    matriz = cv2.getRotationMatrix2D((ancho / 2, alto / 2), angulo, 1.0)
+    return cv2.warpAffine(
+        imagen_gris,
+        matriz,
+        (ancho, alto),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
 
 
 def _probar_variantes(imagen_gris, prefijo, textos, inicio):
@@ -234,12 +267,12 @@ def _probar_variantes(imagen_gris, prefijo, textos, inicio):
         clave = f"{prefijo}{nombre}"
         patente, texto, confianza = leer_patente_desde_imagen(imagen, psm)
         textos[clave] = texto
-        if time.monotonic() - inicio >= settings.OCR_PRESUPUESTO_TOTAL:
-            return mejor, True
         if patente and (mejor[2] is None or confianza > mejor[2]):
             mejor = (patente, clave, confianza)
             if confianza >= settings.OCR_CONFIANZA_ALTA:
                 break
+        if time.monotonic() - inicio >= settings.OCR_PRESUPUESTO_TOTAL:
+            return mejor, True
     return mejor, False
 
 
@@ -253,7 +286,7 @@ def extraer_patente(imagen_bytes: bytes) -> ResultadoOcr:
     mejor, agotado = _probar_variantes(imagen_gris, "", textos, inicio)
     if agotado:
         logger.warning("OCR superó el presupuesto global")
-        return ResultadoOcr(None, None, textos)
+        return ResultadoOcr(mejor[0], mejor[1], textos, mejor[2])
 
     # El front envía un recorte ajustado. Haar queda solamente como último recurso.
     candidatos = detectar_regiones_patente(imagen_gris) if settings.OCR_USAR_HAAR else []
@@ -264,10 +297,11 @@ def extraer_patente(imagen_bytes: bytes) -> ResultadoOcr:
         candidato, agotado = _probar_variantes(
             recorte, f"haar_{i + 1}_", textos, inicio
         )
-        if agotado:
-            return ResultadoOcr(None, None, textos)
         if candidato[2] is not None and (mejor[2] is None or candidato[2] > mejor[2]):
             mejor = candidato
+        if agotado:
+            logger.warning("OCR superó el presupuesto global durante candidatos Haar")
+            return ResultadoOcr(mejor[0], mejor[1], textos, mejor[2])
 
     if mejor[0]:
         return ResultadoOcr(mejor[0], mejor[1], textos, mejor[2])
