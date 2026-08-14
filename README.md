@@ -89,6 +89,15 @@ texto crudo producido por cada variante. Una lectura exitosa informa la
 `OCR_TIMEOUT_VARIANTE` y `OCR_PRESUPUESTO_TOTAL` limitan el tiempo, mientras
 `OCR_CONFIANZA_MINIMA` y `OCR_CONFIANZA_ALTA` controlan la selección.
 
+Si Tesseract no obtiene una lectura válida, se puede habilitar el respaldo de
+visión con `OCR_IA_HABILITADO=True` y `ANTHROPIC_API_KEY`. Sus opciones de
+modelo, timeout, dimensión, confianza mínima y máximo diario se documentan en
+`.env.example`. El respaldo nunca se consulta cuando Tesseract resuelve la
+patente. `OCR_IA_MAX_DIARIO` usa la caché de Django: con la caché en memoria el
+contador se reinicia al recargar la aplicación web, por lo que es un **tope
+blando** y no una garantía de facturación. `/api/ocr/estado/` expone su estado y
+conteo, pero nunca la clave.
+
 El servidor de desarrollo del frontend usa HTTPS por defecto. Por eso, al
 trabajar localmente, `https://localhost:5173` debe estar incluido en
 `CORS_ALLOWED_ORIGINS` (el `.env.example` admite también el origen HTTP).
