@@ -1,7 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante
+from .models import (
+    Estacionamiento, IngresoLog, Usuario, Vehiculo, Visitante,
+    enmascarar_documento,
+)
 
 
 @admin.register(Usuario)
@@ -37,10 +40,16 @@ class VehiculoAdmin(admin.ModelAdmin):
 
 @admin.register(IngresoLog)
 class IngresoLogAdmin(admin.ModelAdmin):
-    list_display = ('tipo', 'valor_ingresado',
+    list_display = ('tipo', 'valor_ingresado_protegido',
                     'resultado', 'guardia', 'timestamp')
     list_filter = ('tipo', 'resultado', 'timestamp')
     search_fields = ('valor_ingresado', 'detalle', 'guardia__username')
+
+    @admin.display(description="valor ingresado")
+    def valor_ingresado_protegido(self, obj):
+        if obj.tipo == IngresoLog.Tipo.VISITA:
+            return enmascarar_documento(obj.valor_ingresado)
+        return obj.valor_ingresado
 
 
 @admin.register(Estacionamiento)

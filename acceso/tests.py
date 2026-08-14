@@ -19,7 +19,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 
 from acceso import ocr, ocr_ia
 from acceso.models import Estacionamiento, IngresoLog, Vehiculo
-from acceso.models import Visitante, normalizar_documento
+from acceso.models import Visitante, enmascarar_documento, normalizar_documento
 
 
 class CondominioTokenObtainPairTests(TestCase):
@@ -687,16 +687,25 @@ class DocumentoVisitanteTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("numero_documento", response.data)
 
-    def test_evitar_documento_duplicado_para_mismo_propietario(self):
-        self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
-        response = self.crear("pasaporte", " AB   123 ")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(
-            "Cancélala si quieres crear una nueva",
-            str(response.data["numero_documento"]),
+    def test_documento_vigente_renueva_misma_fila_y_token(self):
+        primera = self.crear("pasaporte", "ab 123")
+        visita = Visitante.objects.get(pk=primera.data["id"])
+        token_anterior = visita.token_qr
+
+        response = self.crear(
+            "pasaporte", " AB   123 ", nombre="Nombre corregido", pais_documento="Perú"
         )
 
-    def test_documento_de_visita_vencida_se_puede_autorizar_nuevamente(self):
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["renovada"])
+        self.assertEqual(response.data["id"], visita.pk)
+        visita.refresh_from_db()
+        self.assertNotEqual(visita.token_qr, token_anterior)
+        self.assertEqual(visita.nombre, "Nombre corregido")
+        self.assertEqual(visita.pais_documento, "Perú")
+        self.assertEqual(Visitante.objects.count(), 1)
+
+    def test_documento_de_visita_vencida_renueva_misma_fila(self):
         self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
         Visitante.objects.filter(propietario=self.propietario).update(
             fecha_inicio=timezone.now() - timedelta(days=31),
@@ -705,13 +714,25 @@ class DocumentoVisitanteTests(TestCase):
 
         response = self.crear("pasaporte", " AB   123 ")
 
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["renovada"])
         self.assertEqual(
-            Visitante.objects.filter(propietario=self.propietario).count(), 2
+            Visitante.objects.filter(propietario=self.propietario).count(), 1
         )
 
+    def test_renovacion_puede_hacerse_permanente(self):
+        self.crear("dni", "AR-12345")
+
+        response = self.crear("dni", "AR-12345", permanente=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["renovada"])
+        self.assertIsNone(response.data["fecha_fin"])
+
     def test_otro_propietario_puede_autorizar_el_mismo_documento(self):
-        self.assertEqual(self.crear("pasaporte", "ab 123").status_code, 201)
+        primera = self.crear("pasaporte", "ab 123")
+        visita_original = Visitante.objects.get(pk=primera.data["id"])
+        token_original = visita_original.token_qr
         otro_propietario = get_user_model().objects.create_user(
             username="otro-prop-doc",
             rol="propietario",
@@ -734,6 +755,21 @@ class DocumentoVisitanteTests(TestCase):
         self.assertEqual(
             Visitante.objects.filter(numero_documento="AB 123").count(), 2
         )
+        visita_original.refresh_from_db()
+        self.assertEqual(visita_original.token_qr, token_original)
+
+    def test_renovacion_invalida_el_qr_anterior(self):
+        primera = self.crear("pasaporte", "QR12345")
+        token_anterior = primera.data["token_qr"]
+        self.crear("pasaporte", "QR12345")
+        self.client.force_authenticate(self.guardia)
+
+        response = self.client.post(
+            "/api/guardia/verificar-qr/", {"token": token_anterior}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["permitido"])
 
     def test_guardia_encuentra_autorizacion_extranjera_normalizada(self):
         self.assertEqual(self.crear("pasaporte", "pa123456").status_code, 201)
@@ -749,6 +785,31 @@ class DocumentoVisitanteTests(TestCase):
     def test_normalizador_no_impone_formato_dni_por_pais(self):
         self.assertEqual(normalizar_documento("dni", "a-1/234.zz"), "A-1/234.ZZ")
 
+
+class EnmascaradoDocumentoTests(TestCase):
+    def test_enmascara_cada_tipo_de_documento_y_conserva_separadores(self):
+        casos = {
+            "12345678-5": "12****78-5",
+            "PA 123456": "PA ****56",
+            "AR-123.456": "AR-***.*56",
+            "CREDENCIAL/77": "CR********/77",
+        }
+        for valor, esperado in casos.items():
+            with self.subTest(valor=valor):
+                self.assertEqual(enmascarar_documento(valor), esperado)
+
+    def test_valor_corto_o_formato_inesperado_se_maneja_sin_perder_separadores(self):
+        self.assertEqual(enmascarar_documento("A-1"), "A-1")
+        self.assertEqual(enmascarar_documento("AB_12!XY"), "AB_**!XY")
+
+    def test_serializer_enmascara_visita_pero_no_patente(self):
+        from acceso.serializers import IngresoLogSerializer
+
+        visita = IngresoLog(tipo=IngresoLog.Tipo.VISITA, valor_ingresado="PA123456")
+        vehiculo = IngresoLog(tipo=IngresoLog.Tipo.VEHICULO, valor_ingresado="AB1234")
+
+        self.assertEqual(IngresoLogSerializer(visita).data["valor_ingresado"], "PA****56")
+        self.assertEqual(IngresoLogSerializer(vehiculo).data["valor_ingresado"], "AB1234")
 
 class MigracionDocumentoVisitanteTests(TransactionTestCase):
     reset_sequences = True

@@ -99,6 +99,15 @@ class VisitanteViewSet(viewsets.ModelViewSet):
         # Cada propietario solo ve/edita sus propias visitas
         return Visitante.objects.filter(propietario=self.request.user).order_by("-creado_en")
 
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        codigo = status.HTTP_200_OK if serializer.data["renovada"] else status.HTTP_201_CREATED
+        return Response(serializer.data, status=codigo, headers=headers)
+
 
 # ---------------------------------------------------------------------------
 # Propietario: solicita registro de patente / Admin: aprueba o rechaza
