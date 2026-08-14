@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from datetime import timedelta
+import logging
 from pathlib import Path
 
 import dj_database_url
@@ -164,6 +165,21 @@ OCR_PRESUPUESTO_TOTAL = config('OCR_PRESUPUESTO_TOTAL', default=8, cast=float)
 OCR_CONFIANZA_MINIMA = config('OCR_CONFIANZA_MINIMA', default=45, cast=float)
 OCR_CONFIANZA_ALTA = config('OCR_CONFIANZA_ALTA', default=80, cast=float)
 OCR_USAR_HAAR = config('OCR_USAR_HAAR', default=False, cast=bool)
+
+# Respaldo opcional de visión. La clave nunca se registra ni se expone.
+ANTHROPIC_API_KEY = config('ANTHROPIC_API_KEY', default='')
+OCR_IA_MODELO = config('OCR_IA_MODELO', default='claude-haiku-4-5-20251001')
+OCR_IA_TIMEOUT = config('OCR_IA_TIMEOUT', default=8, cast=float)
+OCR_IA_MAX_DIM = config('OCR_IA_MAX_DIM', default=1000, cast=int)
+OCR_IA_CONFIANZA_MINIMA = config('OCR_IA_CONFIANZA_MINIMA', default=70, cast=float)
+OCR_IA_MAX_DIARIO = config('OCR_IA_MAX_DIARIO', default=500, cast=int)
+OCR_IA_HABILITADO = config('OCR_IA_HABILITADO', default=False, cast=bool)
+if OCR_IA_HABILITADO and not ANTHROPIC_API_KEY:
+    logging.getLogger('acceso.ocr_ia').warning(
+        'OCR_IA_HABILITADO está activo pero falta ANTHROPIC_API_KEY; '
+        'el respaldo de visión quedará deshabilitado.'
+    )
+    OCR_IA_HABILITADO = False
 
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',

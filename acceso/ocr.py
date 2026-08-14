@@ -34,6 +34,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .models import PATENTE_REGEX
+from .ocr_ia import conteo_diario, extraer_patente_ia
 from .permissions import EsAdmin, EsGuardia
 
 logger = logging.getLogger("acceso.ocr")
@@ -321,7 +322,8 @@ class LeerPatenteView(APIView):
             return Response({"detail": "Falta el archivo 'foto'"}, status=400)
 
         try:
-            resultado = extraer_patente(leer_y_validar_archivo(archivo))
+            imagen_bytes = leer_y_validar_archivo(archivo)
+            resultado = extraer_patente(imagen_bytes)
         except OcrNoDisponible as error:
             return Response({"ok": False, "detalle": str(error)}, status=503)
         except ImagenInvalida as error:
@@ -343,15 +345,30 @@ class LeerPatenteView(APIView):
                 "patente": resultado.patente,
                 "variante": resultado.variante,
                 "confianza": resultado.confianza,
+                "origen": "tesseract",
             }
+            logger.info("Lectura de patente resuelta por tesseract")
             if settings.DEBUG and request.query_params.get("debug") == "1":
                 respuesta["debug"] = {"textos": resultado.textos}
             return Response(respuesta)
 
-        # Fallback: el OCR no logró leer una patente válida
+        if settings.OCR_IA_HABILITADO:
+            resultado_ia = extraer_patente_ia(imagen_bytes)
+            if resultado_ia:
+                logger.info("Lectura de patente resuelta por ia")
+                return Response({
+                    "ok": True,
+                    "patente": resultado_ia.patente,
+                    "confianza": resultado_ia.confianza,
+                    "origen": "ia",
+                })
+
+        # Fallback: ninguno de los reconocedores logró una patente válida.
+        logger.info("Lectura de patente no resuelta; se requiere ingreso manual")
         respuesta = {
             "ok": False,
             "detalle": "No se pudo leer la patente automáticamente. Ingresa manualmente.",
+            "origen": None,
         }
         if settings.DEBUG and request.query_params.get("debug") == "1":
             respuesta["debug"] = {"textos": resultado.textos}
@@ -378,6 +395,13 @@ class EstadoOcrView(APIView):
             "tesseract": {"version": version_tesseract, "error": error_tesseract},
             "opencv": {"version": cv2.__version__},
             "haar": {"cargado": cascade_cargado, "ruta": CASCADE_PATH},
+            "ia": {
+                "habilitado": settings.OCR_IA_HABILITADO,
+                "clave_configurada": bool(settings.ANTHROPIC_API_KEY),
+                "modelo": settings.OCR_IA_MODELO,
+                "timeout": settings.OCR_IA_TIMEOUT,
+                "conteo_hoy": conteo_diario(),
+            },
             "limites": {
                 "max_upload_bytes": settings.OCR_MAX_UPLOAD_BYTES,
                 "max_image_width": settings.OCR_MAX_IMAGE_WIDTH,

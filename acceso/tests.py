@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import cv2
+import anthropic
 import numpy as np
 import pytesseract
 
@@ -16,7 +17,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
-from acceso import ocr
+from acceso import ocr, ocr_ia
 from acceso.models import Estacionamiento, IngresoLog, Vehiculo
 from acceso.models import Visitante, normalizar_documento
 
@@ -1413,6 +1414,35 @@ class OCRSeguridadEndpointTests(TestCase):
         self.assertEqual(response.data["patente"], "ABCD12")
         self.assertEqual(response.data["variante"], "gris_psm7")
         self.assertEqual(response.data["confianza"], 92)
+        self.assertEqual(response.data["origen"], "tesseract")
+
+    @override_settings(OCR_IA_HABILITADO=False)
+    @patch("acceso.ocr.extraer_patente_ia")
+    @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
+    def test_bandera_apagada_no_llama_respaldo(self, extraer, respaldo):
+        response = self.subir(self.imagen())
+        self.assertFalse(response.data["ok"])
+        self.assertIsNone(response.data["origen"])
+        respaldo.assert_not_called()
+
+    @override_settings(OCR_IA_HABILITADO=True, ANTHROPIC_API_KEY="prueba")
+    @patch("acceso.ocr.extraer_patente_ia")
+    @patch("acceso.ocr.extraer_patente")
+    def test_tesseract_resuelve_sin_llamar_respaldo(self, extraer, respaldo):
+        extraer.return_value = ocr.ResultadoOcr("ABCD12", "gris_psm7", {}, 91)
+        response = self.subir(self.imagen())
+        self.assertEqual(response.data["origen"], "tesseract")
+        respaldo.assert_not_called()
+
+    @override_settings(OCR_IA_HABILITADO=True, ANTHROPIC_API_KEY="prueba")
+    @patch("acceso.ocr.extraer_patente_ia", return_value=ocr_ia.ResultadoOcrIa("BBBB12", 94))
+    @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
+    def test_tesseract_falla_y_respaldo_resuelve(self, extraer, respaldo):
+        response = self.subir(self.imagen())
+        self.assertEqual(response.data, {
+            "ok": True, "patente": "BBBB12", "confianza": 94, "origen": "ia",
+        })
+        respaldo.assert_called_once()
 
     @patch("acceso.ocr.extraer_patente", return_value=ocr.ResultadoOcr(None, None, {}))
     def test_ocr_sin_coincidencias_mantiene_fallback_manual(self, extraer):
@@ -1489,10 +1519,57 @@ class EstadoOcrEndpointTests(TestCase):
         self.assertIn("ruta", response.data["haar"])
         self.assertEqual(response.data["opencv"]["version"], cv2.__version__)
         self.assertIn("throttle_rate", response.data["limites"])
+        self.assertIn("clave_configurada", response.data["ia"])
+        self.assertNotIn("api_key", response.data["ia"])
 
     def test_restringe_diagnostico_a_admin(self):
         self.client.force_authenticate(self.guardia)
         self.assertEqual(self.client.get(self.url).status_code, 403)
+
+
+@override_settings(OCR_IA_CONFIANZA_MINIMA=70)
+class OcrIaTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_valida_json_y_normaliza_patente(self):
+        resultado = ocr_ia.validar_respuesta(
+            'texto {"patente":"bb-bb 12","legible":true,"confianza":92} fin'
+        )
+        self.assertEqual(resultado, ocr_ia.ResultadoOcrIa("BBBB12", 92))
+
+    def test_descarta_respuestas_no_confiables(self):
+        casos = [
+            "no es json",
+            '{"patente":"BBBB12","legible":false,"confianza":99}',
+            '{"patente":"BBBB12","legible":true,"confianza":69}',
+            '{"patente":"A1","legible":true,"confianza":99}',
+        ]
+        for respuesta in casos:
+            with self.subTest(respuesta=respuesta):
+                self.assertIsNone(ocr_ia.validar_respuesta(respuesta))
+
+    @override_settings(
+        OCR_IA_HABILITADO=True, ANTHROPIC_API_KEY="prueba", OCR_IA_MAX_DIARIO=0,
+    )
+    @patch("acceso.ocr_ia.anthropic.Anthropic")
+    def test_tope_diario_no_crea_cliente(self, cliente):
+        self.assertIsNone(ocr_ia.extraer_patente_ia(b"imagen"))
+        cliente.assert_not_called()
+
+    @override_settings(OCR_IA_HABILITADO=True, ANTHROPIC_API_KEY="prueba")
+    @patch("acceso.ocr_ia.preparar_imagen", return_value=b"jpeg")
+    @patch("acceso.ocr_ia.anthropic.Anthropic")
+    def test_timeout_y_red_no_se_propagan(self, cliente, preparar):
+        for error in (
+            anthropic.APITimeoutError(request=None),
+            anthropic.APIConnectionError(request=None),
+        ):
+            with self.subTest(error=type(error).__name__):
+                cache.clear()
+                cliente.return_value.messages.create.side_effect = error
+                with self.assertLogs("acceso.ocr_ia", level="WARNING"):
+                    self.assertIsNone(ocr_ia.extraer_patente_ia(b"imagen"))
 
 class VehiculoEstacionamientoInvariantTests(TestCase):
     def setUp(self):
