@@ -148,6 +148,23 @@ def enmascarar_rut(rut: str) -> str:
     return f"{cuerpo[:2]}{'*' * (len(cuerpo) - 4)}{cuerpo[-2:]}-{dv}"
 
 
+def enmascarar_documento(valor: str) -> str:
+    """Enmascara identificadores personales conservando sus separadores."""
+    if not valor or len(valor) <= 4:
+        return valor
+    if RUT_REGEX.fullmatch(valor):
+        return enmascarar_rut(valor)
+
+    posiciones = [indice for indice, caracter in enumerate(valor) if caracter.isalnum()]
+    if len(posiciones) <= 4:
+        return valor
+    visibles = set(posiciones[:2] + posiciones[-2:])
+    return "".join(
+        caracter if not caracter.isalnum() or indice in visibles else "*"
+        for indice, caracter in enumerate(valor)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Visitantes (acceso temporal por documento de identidad)
 # ---------------------------------------------------------------------------
@@ -224,7 +241,8 @@ class Visitante(models.Model):
         return self.fecha_inicio <= ahora <= self.fecha_fin
 
     def __str__(self):
-        return f"{self.nombre} ({self.tipo_documento}: {self.numero_documento}) - {self.propietario.unidad}"
+        documento = enmascarar_documento(self.numero_documento)
+        return f"{self.nombre} ({self.tipo_documento}: {documento}) - {self.propietario.unidad}"
 
 
 # ---------------------------------------------------------------------------
@@ -334,4 +352,9 @@ class IngresoLog(models.Model):
         ordering = ["-timestamp"]
 
     def __str__(self):
-        return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.tipo} {self.valor_ingresado} -> {self.resultado}"
+        valor = (
+            enmascarar_documento(self.valor_ingresado)
+            if self.tipo == self.Tipo.VISITA
+            else self.valor_ingresado
+        )
+        return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.tipo} {valor} -> {self.resultado}"

@@ -1,6 +1,7 @@
+import uuid
+
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
-from django.utils import timezone
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -12,7 +13,7 @@ from .models import (
     Usuario,
     Vehiculo,
     Visitante,
-    enmascarar_rut,
+    enmascarar_documento,
     normalizar_documento,
     normalizar_patente,
     validar_patente,
@@ -101,6 +102,7 @@ class VisitanteSerializer(serializers.ModelSerializer):
     permanente = serializers.BooleanField(
         write_only=True, required=False, default=False
     )
+    renovada = serializers.SerializerMethodField()
 
     class Meta:
         model = Visitante
@@ -117,6 +119,7 @@ class VisitanteSerializer(serializers.ModelSerializer):
             "creado_en",
             "vigente",
             "permanente",
+            "renovada",
         ]
         read_only_fields = ["token_qr", "propietario", "creado_en", "vigente"]
         extra_kwargs = {
@@ -145,24 +148,16 @@ class VisitanteSerializer(serializers.ModelSerializer):
             if self.instance
             else self.context["request"].user
         )
-        ahora = timezone.now()
-        duplicados = Visitante.objects.filter(
-            tipo_documento=tipo_documento,
-            numero_documento=attrs["numero_documento"],
-            propietario=propietario,
-            fecha_inicio__lte=ahora,
-        ).filter(Q(fecha_fin__isnull=True) | Q(fecha_fin__gte=ahora))
         if self.instance:
-            duplicados = duplicados.exclude(pk=self.instance.pk)
-        if duplicados.exists():
-            raise serializers.ValidationError(
-                {
-                    "numero_documento": (
-                        "Esta persona ya tiene una autorización vigente de tu unidad. "
-                        "Cancélala si quieres crear una nueva."
-                    )
-                }
-            )
+            duplicados = Visitante.objects.filter(
+                tipo_documento=tipo_documento,
+                numero_documento=attrs["numero_documento"],
+                propietario=propietario,
+            ).exclude(pk=self.instance.pk)
+            if duplicados.exists():
+                raise serializers.ValidationError(
+                    {"numero_documento": "Ya existe una autorización para este documento."}
+                )
 
         fecha_inicio = attrs.get(
             "fecha_inicio",
@@ -186,12 +181,39 @@ class VisitanteSerializer(serializers.ModelSerializer):
         attrs["fecha_fin"] = fecha_fin
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         permanente = validated_data.pop("permanente", False)
-        validated_data["propietario"] = self.context["request"].user
+        propietario = self.context["request"].user
+        candidato = (
+            Visitante.objects.select_for_update()
+            .filter(
+                propietario=propietario,
+                tipo_documento=validated_data["tipo_documento"],
+                numero_documento=validated_data["numero_documento"],
+            )
+            .order_by("-fecha_inicio", "-pk")
+            .first()
+        )
+        if candidato:
+            # Se conserva la fila para que el historial de ingresos siga ligado a
+            # la misma autorización, en vez de duplicar a una visita recurrente.
+            for atributo in ("fecha_inicio", "fecha_fin", "nombre", "pais_documento"):
+                if atributo in validated_data:
+                    setattr(candidato, atributo, validated_data[atributo])
+            candidato.token_qr = uuid.uuid4()
+            candidato.save(permanente=permanente)
+            candidato._renovada = True
+            return candidato
+
+        validated_data["propietario"] = propietario
         visitante = Visitante(**validated_data)
         visitante.save(permanente=permanente)
+        visitante._renovada = False
         return visitante
+
+    def get_renovada(self, obj):
+        return getattr(obj, "_renovada", False)
 
     def update(self, instance, validated_data):
         permanente = validated_data.pop("permanente", instance.fecha_fin is None)
@@ -317,8 +339,8 @@ class DocumentoVerificacionSerializer(serializers.Serializer):
 
 
 class IngresoLogSerializer(serializers.ModelSerializer):
-    # El valor mostrado se enmascara cuando es un RUT (dato personal de una
-    # visita, no de un usuario del sistema) — la patente no se enmascara.
+    # Todo documento de una visita es un dato personal y se enmascara; la
+    # patente identifica al vehículo y por decisión de negocio queda visible.
     valor_ingresado = serializers.SerializerMethodField()
 
     class Meta:
@@ -336,7 +358,7 @@ class IngresoLogSerializer(serializers.ModelSerializer):
 
     def get_valor_ingresado(self, obj):
         if obj.tipo == IngresoLog.Tipo.VISITA:
-            return enmascarar_rut(obj.valor_ingresado)
+            return enmascarar_documento(obj.valor_ingresado)
         return obj.valor_ingresado
 
 
